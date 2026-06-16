@@ -1,0 +1,9 @@
+node_modules/
+dist/
+target/
+.env
+.env.local
+*.log
+apps/server/data/
+apps/desktop/src-tauri/target/
+oldCode

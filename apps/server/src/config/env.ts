@@ -1,0 +1,51 @@
+import dotenv from 'dotenv';
+import { dirname, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const envCandidates = [
+  resolve(here, '../../../../../.env'),
+  resolve(here, '../../../../.env'),
+  resolve(here, '../../../.env'),
+  resolve(here, '../../.env'),
+  resolve(process.cwd(), '../../.env'),
+  resolve(process.cwd(), '../.env'),
+  resolve(process.cwd(), '.env')
+];
+
+for (const path of [...new Set(envCandidates)].filter((candidate) => existsSync(candidate))) {
+  dotenv.config({ path, override: true });
+}
+
+const envSchema = z.object({
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default('gemini-live-2.5-flash-native-audio'),
+  GEMINI_API_VERSION: z.string().default('v1alpha'),
+  GIADA_SERVER_HOST: z.string().default('127.0.0.1'),
+  GIADA_SERVER_PORT: z.coerce.number().int().positive().default(8787),
+  GIADA_DATABASE_URL: z.string().default('file:./data/giada.sqlite'),
+  GIADA_DEFAULT_LANGUAGE: z.string().default('it-IT'),
+  GIADA_ALLOWED_ORIGINS: z.string().default('tauri://localhost,http://localhost:1420'),
+  DISCORD_BOT_TOKEN: z.string().optional(),
+  DISCORD_BEARER_TOKEN: z.string().optional(),
+  DISCORD_APPLICATION_ID: z.string().optional(),
+  DISCORD_PUBLIC_KEY: z.string().optional(),
+  DISCORD_GUILD_ID: z.string().optional(),
+  DISCORD_REGISTER_GLOBAL_COMMANDS: z.coerce.boolean().default(false),
+  DISCORD_GEMINI_MODEL: z.string().default('gemini-2.5-flash')
+});
+
+export type AppConfig = ReturnType<typeof loadConfig>;
+
+export function loadConfig() {
+  const parsed = envSchema.parse(process.env);
+  return {
+    ...parsed,
+    allowedOrigins: parsed.GIADA_ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean),
+    databasePath: parsed.GIADA_DATABASE_URL.startsWith('file:')
+      ? parsed.GIADA_DATABASE_URL.slice('file:'.length)
+      : parsed.GIADA_DATABASE_URL
+  };
+}

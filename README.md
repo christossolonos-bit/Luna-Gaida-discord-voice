@@ -1,0 +1,124 @@
+# Giada Companion
+
+Production-oriented foundation for a Tauri v2 desktop AI companion with a VRM avatar, realtime Gemini Live API bridge, shared memory/personality, Discord addon module, and a narrow native command surface.
+
+## What Is Implemented
+
+- Tauri v2 desktop shell with two windows:
+  - `main`: full control panel, permissions, transcript, avatar preview.
+  - `avatar`: transparent always-on-top floating avatar window with fewer Tauri permissions.
+- React + TypeScript frontend with:
+  - VRM loading from reused legacy models.
+  - Mixamo animation mapping for `idle`, `listening`, `thinking`, `speaking`, `reacting`.
+  - analyser-driven lip sync for Gemini PCM audio.
+  - blink and expression state updates.
+  - microphone, text chat, passive mode, interrupt, and browser/WebView screen sharing controls.
+- Node/TypeScript backend with:
+  - Gemini Live API server-to-server session manager.
+  - WebSocket bridge at `ws://127.0.0.1:8787/realtime`.
+  - SQLite-backed memory store.
+  - persisted bounded personality profile.
+  - public/private/secret policy layer and Discord redaction.
+  - modular plugin manager and Discord text/voice presence plugin.
+- Rust/Tauri security commands:
+  - read/write/list files only under app data/config/cache/assets.
+  - allowlisted URL opening.
+  - desktop notification request bridge.
+  - clipboard and screenshot gates.
+  - explicit denial for privileged commands from the floating avatar window.
+
+## Setup
+
+1. Install Node 22+, Rust, and Tauri v2 Linux/macOS/Windows prerequisites.
+2. Copy `.env.example` to `.env` and fill backend-only secrets.
+3. Install dependencies:
+
+```bash
+npm install
+```
+
+4. Start the backend:
+
+```bash
+npm run dev --workspace @giada/server
+```
+
+5. Start Tauri:
+
+```bash
+npm run tauri:dev --workspace @giada/desktop
+```
+
+## Gemini Live API
+
+The backend uses the official server-to-server Live API pattern so the Gemini API key never enters frontend code. The current default model is `gemini-live-2.5-flash-native-audio`; set `GEMINI_MODEL` to a different officially supported Live model if needed.
+
+Implemented config:
+
+- audio output via `responseModalities: [AUDIO]`
+- raw PCM mic input forwarding
+- JPEG screen frame forwarding
+- text input
+- tool declarations and manual tool responses
+- input/output transcription hooks
+- affective dialog
+- proactive audio
+- safety thresholds set to `OFF` where the SDK/provider allows it
+
+Provider-enforced limits still apply. As of Google’s Live API docs, Live API is preview, uses 16-bit PCM 16 kHz input, 24 kHz PCM output, JPEG images up to 1 FPS, and provider safety/rate/model availability constraints cannot be bypassed by application code.
+
+Official docs:
+
+- https://ai.google.dev/gemini-api/docs/live-api
+- https://ai.google.dev/gemini-api/docs/live-api/tools
+
+## Discord
+
+The Discord plugin uses the shared personality, public Discord-safe memory, and policy redaction. Discord text replies use `DISCORD_GEMINI_MODEL` so the desktop Live audio session is not stolen by channel chat.
+
+Slash commands:
+
+- `/giada help` - show Discord commands.
+- `/giada listen mode:here` - set the current text channel as the always-listen channel.
+- `/giada listen mode:off` - disable always-listen mode; other channels require her name or a bot mention.
+- `/giada voice mode:watch` - watch your current voice channel, join when someone enters, and leave after everyone leaves.
+- `/giada voice mode:off` - disable voice watching.
+- `/giada voice mode:join` - join your current voice channel now.
+- `/giada status` - show current Discord settings.
+
+Changing listen/voice-watch settings requires Discord Manage Server permission. Voice channel watching is presence/control only in this foundation; full Discord voice conversation still needs a Discord audio receive/send bridge.
+
+Slash command delivery is supported in two modes:
+
+- Gateway mode: leave the Discord Developer Portal Interactions Endpoint URL empty and keep the backend bot process running.
+- HTTP endpoint mode: set the Developer Portal Interactions Endpoint URL to a public tunnel for `POST /interactions` or `POST /discord/interactions`, and set `DISCORD_PUBLIC_KEY` in `.env`.
+
+Command definitions use discord.js `SlashCommandBuilder`, and deployment uses discord.js `REST`/`Routes` on backend startup or through the local registration endpoint.
+
+Local diagnostics:
+
+```bash
+curl http://127.0.0.1:8787/discord/status
+curl -X POST http://127.0.0.1:8787/discord/register-commands
+```
+
+If `/giada` times out and neither `Received Discord slash command` nor `Received Discord HTTP interaction` appears in the backend logs, Discord is not sending interactions to this process. Check that the bot token belongs to the same Discord application whose `/giada` command you are using, and either clear the Developer Portal Interactions Endpoint URL for gateway mode or point it at a public tunnel for this backend.
+
+## Development Checks
+
+```bash
+npm run typecheck --workspace @giada/server
+npm run typecheck --workspace @giada/desktop
+npm run test --workspace @giada/server
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+```
+
+On this machine, Rust/Tauri verification is blocked until Linux Tauri system packages are installed, starting with `libdbus-1-dev` and `pkg-config`.
+
+## Security Posture
+
+Secrets live in the backend process only. The frontend talks to the backend over localhost WebSocket/HTTP and invokes only narrow Tauri commands.
+
+No arbitrary shell command exists. File commands reject absolute paths, parent traversal, and non-approved roots. The avatar window is intentionally lower privilege and runtime-denied from admin/native commands.
+
+See [Threat Model](docs/threat-model.md) for details.
