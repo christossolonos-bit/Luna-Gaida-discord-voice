@@ -28,12 +28,14 @@ import {
   DiscordTextResponder,
   type DiscordAttachmentSummary,
   type DiscordContextMessage,
-  type DiscordImageAttachment
+  type DiscordImageAttachment,
+  type DiscordReactionSummary
 } from './responder.js';
 import { DiscordVoiceBridge } from './voiceBridge.js';
 
 const MAX_DISCORD_IMAGE_ATTACHMENTS = 4;
 const MAX_DISCORD_IMAGE_BYTES = 8 * 1024 * 1024;
+const DISCORD_COMMAND_OWNER_USER_ID = '573903151472836609';
 
 const giadaCommand = new SlashCommandBuilder()
   .setName('giada')
@@ -45,11 +47,25 @@ const giadaCommand = new SlashCommandBuilder()
     .setName('status')
     .setDescription('Show current Discord companion settings.'))
   .addSubcommand((subcommand) => subcommand
+    .setName('authorize')
+    .setDescription('Authorize a user to run Giada Discord commands.')
+    .addUserOption((option) => option
+      .setName('user')
+      .setDescription('User to authorize.')
+      .setRequired(true)))
+  .addSubcommand((subcommand) => subcommand
+    .setName('deauthorize')
+    .setDescription('Remove a user authorization for Giada Discord commands.')
+    .addUserOption((option) => option
+      .setName('user')
+      .setDescription('User to deauthorize.')
+      .setRequired(true)))
+  .addSubcommand((subcommand) => subcommand
     .setName('listen')
     .setDescription('Set or disable the always-listen text channel.')
     .addStringOption((option) => option
       .setName('mode')
-      .setDescription('Use here to reply to every message, or off to require her name/mention.')
+      .setDescription('Use here to let Giada observe this channel, or off to require her name/mention.')
       .setRequired(true)
       .addChoices(
         { name: 'here', value: 'here' },
@@ -299,7 +315,7 @@ export class DiscordPlugin implements GiadaPlugin {
   }
 
   private async handleMessage(message: Message) {
-    if (message.author.bot || !message.guildId) {
+    if (message.author.id === this.client?.user?.id || !message.guildId) {
       return;
     }
 
@@ -315,6 +331,7 @@ export class DiscordPlugin implements GiadaPlugin {
       await this.reply(message, safeInput.text);
       return;
     }
+    this.storeMessageAuthorIdentity(message);
 
     this.memory.write({
       content: `Discord ${message.guildId}/${message.channelId} ${message.member?.displayName ?? message.author.username}: ${safeInput.text}`,
@@ -331,11 +348,23 @@ export class DiscordPlugin implements GiadaPlugin {
       guildId: message.guildId,
       channelId: message.channelId,
       authorName: message.member?.displayName ?? message.author.username,
+      authorId: message.author.id,
       text: safeInput.text,
       replyTo: context.replyTo,
       recentMessages: context.recentMessages,
-      images: context.images
+      images: context.images,
+      mayStaySilent: listeningChannel && !addressed,
+      reactionTargetMessageIds: context.reactionTargetMessageIds,
+      addReaction: (messageId, emoji) => this.addReactionToContextMessage(message, context.reactionTargetMessageIds, messageId, emoji),
+      knownUsers: this.settings.listUserIdentities(message.guildId).map((user) => ({
+        userId: user.userId,
+        username: user.username,
+        displayName: user.displayName
+      }))
     });
+    if (!response) {
+      return;
+    }
     await this.reply(message, response);
 
     this.memory.write({
@@ -375,6 +404,35 @@ export class DiscordPlugin implements GiadaPlugin {
     }
 
     const subcommand = interaction.options.getSubcommand();
+    const canManageAccess = this.hasGatewayAdminOrOwner(interaction);
+    const canRunCommand = canManageAccess || this.settings.isUserAuthorized(interaction.guildId, interaction.user.id);
+    if ((subcommand === 'authorize' || subcommand === 'deauthorize') && !canManageAccess) {
+      await this.replyInteraction(interaction, 'Only a Discord Administrator or the Giada owner can manage Giada command access.');
+      return;
+    }
+    if (subcommand !== 'authorize' && subcommand !== 'deauthorize' && !canRunCommand) {
+      await this.replyInteraction(interaction, 'You are not authorized to run Giada commands. Ask a Discord Administrator to run `/giada authorize user:@you`.');
+      return;
+    }
+
+    if (subcommand === 'authorize') {
+      const user = interaction.options.getUser('user', true);
+      this.settings.authorizeUser(interaction.guildId, user.id, interaction.user.id);
+      await this.replyInteraction(interaction, `Authorized <@${user.id}> to run Giada commands.`);
+      return;
+    }
+
+    if (subcommand === 'deauthorize') {
+      const user = interaction.options.getUser('user', true);
+      if (user.id === DISCORD_COMMAND_OWNER_USER_ID) {
+        await this.replyInteraction(interaction, 'The Giada owner cannot be deauthorized.');
+        return;
+      }
+      this.settings.deauthorizeUser(interaction.guildId, user.id);
+      await this.replyInteraction(interaction, `Removed Giada command authorization for <@${user.id}>.`);
+      return;
+    }
+
     if (subcommand === 'help') {
       await this.replyInteraction(interaction, this.helpText());
       return;
@@ -386,9 +444,6 @@ export class DiscordPlugin implements GiadaPlugin {
     }
 
     if (subcommand === 'listen') {
-      if (!(await this.requireManageGuild(interaction))) {
-        return;
-      }
       const mode = interaction.options.getString('mode', true);
       if (mode === 'off') {
         this.settings.setListeningChannel(interaction.guildId, null);
@@ -397,25 +452,18 @@ export class DiscordPlugin implements GiadaPlugin {
       }
       const channelId = interaction.options.getChannel('channel')?.id ?? interaction.channelId;
       this.settings.setListeningChannel(interaction.guildId, channelId);
-      await this.replyInteraction(interaction, `Listening channel set to <#${channelId}>. I will reply to every non-bot message there.`);
+      await this.replyInteraction(interaction, `Listening channel set to <#${channelId}>. I will watch the conversation there and reply when it makes sense.`);
       return;
     }
 
     if (subcommand === 'voice') {
       const mode = interaction.options.getString('mode', true);
       if (mode === 'off') {
-        if (!(await this.requireManageGuild(interaction))) {
-          return;
-        }
         const settings = this.settings.get(interaction.guildId);
         this.settings.setVoiceWatchChannel(interaction.guildId, null);
         this.destroyVoiceBridge(interaction.guildId);
         getVoiceConnection(interaction.guildId)?.destroy();
         await this.replyInteraction(interaction, `Voice watch disabled${settings.voiceWatchChannelId ? ` for <#${settings.voiceWatchChannelId}>` : ''}.`);
-        return;
-      }
-
-      if (mode === 'watch' && !(await this.requireManageGuild(interaction))) {
         return;
       }
 
@@ -449,6 +497,44 @@ export class DiscordPlugin implements GiadaPlugin {
     }
 
     const subcommand = getHttpSubcommand(payload);
+    const userId = payload.member?.user?.id ?? payload.user?.id;
+    const canManageAccess = this.hasHttpAdminOrOwner(payload);
+    const canRunCommand = Boolean(userId && (canManageAccess || this.settings.isUserAuthorized(payload.guild_id, userId)));
+    if ((subcommand?.name === 'authorize' || subcommand?.name === 'deauthorize') && !canManageAccess) {
+      await this.updateHttpInteraction(payload, 'Only a Discord Administrator or the Giada owner can manage Giada command access.');
+      return;
+    }
+    if (subcommand?.name !== 'authorize' && subcommand?.name !== 'deauthorize' && !canRunCommand) {
+      await this.updateHttpInteraction(payload, 'You are not authorized to run Giada commands. Ask a Discord Administrator to run `/giada authorize user:@you`.');
+      return;
+    }
+
+    if (subcommand?.name === 'authorize') {
+      const targetUserId = getHttpStringOption(subcommand, 'user');
+      if (!targetUserId || !userId) {
+        await this.updateHttpInteraction(payload, 'Choose a user to authorize.');
+        return;
+      }
+      this.settings.authorizeUser(payload.guild_id, targetUserId, userId);
+      await this.updateHttpInteraction(payload, `Authorized <@${targetUserId}> to run Giada commands.`);
+      return;
+    }
+
+    if (subcommand?.name === 'deauthorize') {
+      const targetUserId = getHttpStringOption(subcommand, 'user');
+      if (!targetUserId) {
+        await this.updateHttpInteraction(payload, 'Choose a user to deauthorize.');
+        return;
+      }
+      if (targetUserId === DISCORD_COMMAND_OWNER_USER_ID) {
+        await this.updateHttpInteraction(payload, 'The Giada owner cannot be deauthorized.');
+        return;
+      }
+      this.settings.deauthorizeUser(payload.guild_id, targetUserId);
+      await this.updateHttpInteraction(payload, `Removed Giada command authorization for <@${targetUserId}>.`);
+      return;
+    }
+
     if (subcommand?.name === 'help') {
       await this.updateHttpInteraction(payload, this.helpText());
       return;
@@ -460,10 +546,6 @@ export class DiscordPlugin implements GiadaPlugin {
     }
 
     if (subcommand?.name === 'listen') {
-      if (!this.hasHttpManageGuild(payload)) {
-        await this.updateHttpInteraction(payload, 'You need Manage Server permission to change Discord companion settings.');
-        return;
-      }
       const mode = getHttpStringOption(subcommand, 'mode');
       if (mode === 'off') {
         this.settings.setListeningChannel(payload.guild_id, null);
@@ -476,27 +558,18 @@ export class DiscordPlugin implements GiadaPlugin {
         return;
       }
       this.settings.setListeningChannel(payload.guild_id, channelId);
-      await this.updateHttpInteraction(payload, `Listening channel set to <#${channelId}>. I will reply to every non-bot message there.`);
+      await this.updateHttpInteraction(payload, `Listening channel set to <#${channelId}>. I will watch the conversation there and reply when it makes sense.`);
       return;
     }
 
     if (subcommand?.name === 'voice') {
       const mode = getHttpStringOption(subcommand, 'mode');
       if (mode === 'off') {
-        if (!this.hasHttpManageGuild(payload)) {
-          await this.updateHttpInteraction(payload, 'You need Manage Server permission to change Discord companion settings.');
-          return;
-        }
         const settings = this.settings.get(payload.guild_id);
         this.settings.setVoiceWatchChannel(payload.guild_id, null);
         this.destroyVoiceBridge(payload.guild_id);
         getVoiceConnection(payload.guild_id)?.destroy();
         await this.updateHttpInteraction(payload, `Voice watch disabled${settings.voiceWatchChannelId ? ` for <#${settings.voiceWatchChannelId}>` : ''}.`);
-        return;
-      }
-
-      if (mode === 'watch' && !this.hasHttpManageGuild(payload)) {
-        await this.updateHttpInteraction(payload, 'You need Manage Server permission to change Discord companion settings.');
         return;
       }
 
@@ -662,6 +735,12 @@ export class DiscordPlugin implements GiadaPlugin {
       logger.warn('Cannot join Discord voice channel because bot user is not ready', { guildId, channelId });
       return;
     }
+    const existingConnection = getVoiceConnection(guildId);
+    if (existingConnection?.joinConfig.channelId === channelId) {
+      this.getVoiceBridge(guildId, botUserId).attach(existingConnection, channelId);
+      this.unsuppressStageVoiceIfNeeded(guildId, channelId);
+      return;
+    }
     const connection = joinVoiceChannel({
       channelId,
       guildId,
@@ -715,6 +794,22 @@ export class DiscordPlugin implements GiadaPlugin {
     const voiceMember = guild?.voiceStates.cache.get(userId)?.member;
     const guildMember = guild?.members.cache.get(userId);
     const cachedUser = this.client?.users.cache.get(userId);
+    const member = voiceMember ?? guildMember;
+    if (member) {
+      this.settings.upsertUserIdentity({
+        guildId,
+        userId,
+        username: member.user.username,
+        displayName: member.displayName
+      });
+    } else if (cachedUser) {
+      this.settings.upsertUserIdentity({
+        guildId,
+        userId,
+        username: cachedUser.username,
+        displayName: cachedUser.globalName ?? cachedUser.username
+      });
+    }
     return voiceMember?.displayName
       ?? guildMember?.displayName
       ?? cachedUser?.globalName
@@ -755,7 +850,12 @@ export class DiscordPlugin implements GiadaPlugin {
     return Boolean(botUser && message.mentions.has(botUser)) || message.content.toLowerCase().includes(name);
   }
 
-  private async collectMessageContext(message: Message): Promise<{ replyTo: DiscordContextMessage | null; recentMessages: DiscordContextMessage[]; images: DiscordImageAttachment[] }> {
+  private async collectMessageContext(message: Message): Promise<{
+    replyTo: DiscordContextMessage | null;
+    recentMessages: DiscordContextMessage[];
+    images: DiscordImageAttachment[];
+    reactionTargetMessageIds: string[];
+  }> {
     const images: DiscordImageAttachment[] = [];
     const recentMessagesPromise = this.fetchRecentMessages(message);
     const replyTo = await this.fetchReplyTarget(message, images);
@@ -767,8 +867,15 @@ export class DiscordPlugin implements GiadaPlugin {
       recentMessages: [
         ...recentMessages.filter((candidate) => candidate.timestamp !== currentMessage.timestamp),
         currentMessage
-      ].slice(-11),
-      images
+      ].slice(-21),
+      images,
+      reactionTargetMessageIds: [
+        ...new Set([
+          ...recentMessages.map((candidate) => candidate.messageId),
+          ...(replyTo ? [replyTo.messageId] : []),
+          currentMessage.messageId
+        ])
+      ]
     };
   }
 
@@ -789,7 +896,7 @@ export class DiscordPlugin implements GiadaPlugin {
       return [];
     }
 
-    const fetched = await message.channel.messages.fetch({ limit: 12, before: message.id }).catch(() => null);
+    const fetched = await message.channel.messages.fetch({ limit: 21, before: message.id }).catch(() => null);
     if (!fetched) {
       return [];
     }
@@ -797,7 +904,7 @@ export class DiscordPlugin implements GiadaPlugin {
     return [...fetched.values()]
       .filter((candidate) => candidate.id !== message.id)
       .sort((left, right) => left.createdTimestamp - right.createdTimestamp)
-      .slice(-10)
+      .slice(-20)
       .map((candidate) => this.formatContextMessage(candidate, this.summarizeAttachments(candidate)));
   }
 
@@ -868,35 +975,74 @@ export class DiscordPlugin implements GiadaPlugin {
   }
 
   private formatContextMessage(message: Message, attachments: DiscordAttachmentSummary[] = this.summarizeAttachments(message)): DiscordContextMessage {
+    this.storeMessageAuthorIdentity(message);
     const content = sanitizeForDiscord(message.cleanContent || message.content || '[no text]').trim();
 
     return {
+      messageId: message.id,
       authorName: message.member?.displayName ?? message.author.username,
+      authorId: message.author.id,
       content: clampContextText(content),
       timestamp: message.createdAt.toISOString(),
-      attachments
+      attachments,
+      reactions: this.summarizeReactions(message)
     };
   }
 
-  private async requireManageGuild(interaction: ChatInputCommandInteraction) {
-    if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-      return true;
+  private summarizeReactions(message: Message): DiscordReactionSummary[] {
+    return [...message.reactions.cache.values()]
+      .filter((reaction) => reaction.count > 0)
+      .slice(0, 12)
+      .map((reaction) => ({
+        emoji: reaction.emoji.toString(),
+        count: reaction.count,
+        reactedByBot: reaction.me
+      }));
+  }
+
+  private async addReactionToContextMessage(sourceMessage: Message, allowedMessageIds: string[], messageId: string, emoji: string) {
+    if (!allowedMessageIds.includes(messageId)) {
+      return { ok: false, error: 'message_not_in_context' };
     }
-    await this.replyInteraction(interaction, 'You need Manage Server permission to change Discord companion settings.');
-    return false;
+    if (!('messages' in sourceMessage.channel)) {
+      return { ok: false, error: 'channel_does_not_support_message_fetch' };
+    }
+    const target = await sourceMessage.channel.messages.fetch(messageId).catch(() => null);
+    if (!target) {
+      return { ok: false, error: 'message_not_found' };
+    }
+    await target.react(emoji);
+    return { ok: true, messageId, emoji };
+  }
+
+  private storeMessageAuthorIdentity(message: Message) {
+    if (!message.guildId || message.author.bot) {
+      return;
+    }
+    this.settings.upsertUserIdentity({
+      guildId: message.guildId,
+      userId: message.author.id,
+      username: message.author.username,
+      displayName: message.member?.displayName ?? message.author.globalName ?? message.author.username
+    });
+  }
+
+  private hasGatewayAdminOrOwner(interaction: ChatInputCommandInteraction) {
+    return interaction.user.id === DISCORD_COMMAND_OWNER_USER_ID
+      || Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
   }
 
   private async reply(message: Message, content: string) {
     await message.reply({
       content,
-      allowedMentions: { parse: [] }
+      allowedMentions: allowedMentionsForContent(content)
     });
   }
 
   private async replyInteraction(interaction: ChatInputCommandInteraction, content: string) {
     const payload = {
       content,
-      allowedMentions: { parse: [] }
+      allowedMentions: allowedMentionsForContent(content)
     };
     if (interaction.deferred && !interaction.replied) {
       await interaction.editReply(payload);
@@ -911,20 +1057,25 @@ export class DiscordPlugin implements GiadaPlugin {
 
   private helpText() {
     return [
-      '`/giada listen mode:here` - reply to every message in this text channel.',
+      '`/giada listen mode:here` - watch this text channel and reply when it makes sense.',
       '`/giada listen mode:off` - only reply when named or mentioned.',
       '`/giada voice mode:watch` - watch your current voice channel and auto-join when people enter.',
       '`/giada voice mode:off` - disable voice watching.',
       '`/giada voice mode:join` - join your current voice channel now.',
-      '`/giada status` - show current Discord settings.'
+      '`/giada status` - show current Discord settings.',
+      '`/giada authorize user:@user` - allow a user to run Giada commands. Administrator or owner only.',
+      '`/giada deauthorize user:@user` - remove command authorization. Administrator or owner only.'
     ].join('\n');
   }
 
   private statusText(guildId: string) {
     const settings = this.settings.get(guildId);
+    const authorizedUsers = this.settings.listAuthorizedUsers(guildId);
     return [
       `Listening channel: ${settings.listeningChannelId ? `<#${settings.listeningChannelId}>` : 'off'}`,
-      `Voice watch channel: ${settings.voiceWatchChannelId ? `<#${settings.voiceWatchChannelId}>` : 'off'}`
+      `Voice watch channel: ${settings.voiceWatchChannelId ? `<#${settings.voiceWatchChannelId}>` : 'off'}`,
+      `Authorized command user IDs: ${authorizedUsers.length ? authorizedUsers.map((user) => user.userId).join(', ') : 'none'}`,
+      `Owner bypass user ID: ${DISCORD_COMMAND_OWNER_USER_ID}`
     ].join('\n');
   }
 
@@ -951,13 +1102,17 @@ export class DiscordPlugin implements GiadaPlugin {
     return guild?.voiceStates.cache.get(userId)?.channelId ?? null;
   }
 
-  private hasHttpManageGuild(payload: DiscordHttpInteraction) {
+  private hasHttpAdminOrOwner(payload: DiscordHttpInteraction) {
+    const userId = payload.member?.user?.id ?? payload.user?.id;
+    if (userId === DISCORD_COMMAND_OWNER_USER_ID) {
+      return true;
+    }
     const permissions = payload.member?.permissions;
     if (!permissions) {
       return false;
     }
     try {
-      return (BigInt(permissions) & PermissionFlagsBits.ManageGuild) === PermissionFlagsBits.ManageGuild;
+      return (BigInt(permissions) & PermissionFlagsBits.Administrator) === PermissionFlagsBits.Administrator;
     } catch {
       return false;
     }
@@ -1043,6 +1198,14 @@ function normalizeDiscordImageMimeType(contentType: string | null, nameOrUrl = '
 function clampContextText(text: string) {
   const normalized = text.replace(/\s+/g, ' ').trim();
   return normalized.length > 700 ? `${normalized.slice(0, 697)}...` : normalized;
+}
+
+function allowedMentionsForContent(content: string) {
+  const users = [...new Set([...content.matchAll(/<@!?(\d{5,25})>/g)].map((match) => match[1]).filter((id): id is string => Boolean(id)))];
+  return {
+    parse: [],
+    users
+  };
 }
 
 async function readRequestBody(req: IncomingMessage) {

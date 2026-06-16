@@ -116,13 +116,14 @@ function appendTranscriptText(previous: string, incoming: string) {
   const incomingFirst = incoming.at(0) ?? '';
   const noSpaceBeforeIncoming = /^[,.;:!?)]$/.test(incomingFirst);
   const noSpaceAfterPrevious = previousLast === '(';
+  const wordBoundary = /[\p{L}\p{N}"']$/u.test(previousLast) && /^[\p{L}\p{N}"'(]$/u.test(incomingFirst);
+  const sentenceBoundary = /[.!?]$/.test(previousLast) && /^[\p{L}\p{N}"'(]$/u.test(incomingFirst);
   const needsSpace =
     !previous.endsWith(' ') &&
     !incoming.startsWith(' ') &&
     !noSpaceBeforeIncoming &&
     !noSpaceAfterPrevious &&
-    /[\p{L}\p{N}"']$/u.test(previousLast) &&
-    /^[\p{L}\p{N}"'(]$/u.test(incomingFirst);
+    (wordBoundary || sentenceBoundary);
 
   return `${previous}${needsSpace ? ' ' : ''}${incoming}`;
 }

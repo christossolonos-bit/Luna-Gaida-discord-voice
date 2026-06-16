@@ -32,7 +32,7 @@ const modelSchema = z.object({
   modelName: z.string().min(1).max(120)
 });
 
-const availableModels = ['AI_Maid', 'AI_Casual', 'AI_Future', 'AI_Military', 'AI_Party'];
+const availableModels = ['AI_Maid', 'AI_Casual', 'AI_Future', 'AI_Military', 'AI_Party', 'AI_Nude'];
 
 export function createToolRegistry(): RegisteredTool[] {
   return [

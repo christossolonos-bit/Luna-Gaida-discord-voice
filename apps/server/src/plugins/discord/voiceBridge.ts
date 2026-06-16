@@ -6,9 +6,9 @@ import {
   VoiceConnectionStatus,
   createAudioPlayer,
   createAudioResource,
-  entersState,
   type AudioPlayer,
-  type VoiceConnection
+  type VoiceConnection,
+  type VoiceConnectionState
 } from '@discordjs/voice';
 import { PassThrough } from 'node:stream';
 import prism from 'prism-media';
@@ -31,6 +31,7 @@ export class DiscordVoiceBridge {
   private connection: VoiceConnection | null = null;
   private channelId: string | null = null;
   private speakingHandler: ((userId: string) => void) | null = null;
+  private connectionStateHandler: ((oldState: VoiceConnectionState, newState: VoiceConnectionState) => void) | null = null;
   private readonly activeInputUsers = new Set<string>();
   private inputQueue: Promise<void> = Promise.resolve();
   private destroyed = false;
@@ -66,36 +67,67 @@ export class DiscordVoiceBridge {
   }
 
   attach(connection: VoiceConnection, channelId: string) {
-    if (this.connection !== connection) {
+    const sameConnection = this.connection === connection;
+    const sameChannel = this.channelId === channelId;
+    if (sameConnection && sameChannel) {
+      connection.subscribe(this.player);
+      if (connection.state.status === VoiceConnectionStatus.Ready) {
+        this.attachReceiver(connection);
+      }
+      return;
+    }
+
+    if (!sameConnection) {
       this.detachReceiver();
+      this.detachConnectionStateHandler();
       this.connection = connection;
+      this.attachConnectionStateHandler(connection);
     }
     this.channelId = channelId;
     connection.subscribe(this.player);
-    void entersState(connection, VoiceConnectionStatus.Ready, 15_000)
-      .then((readyConnection) => {
-        if (this.connection !== readyConnection) {
-          return;
-        }
-        this.attachReceiver(readyConnection);
-      })
-      .catch((error) => {
-        logger.warn('Discord voice connection did not become ready for audio bridge', {
-          guildId: this.guildId,
-          channelId,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      });
+
+    if (connection.state.status === VoiceConnectionStatus.Ready) {
+      this.attachReceiver(connection);
+    }
   }
 
   destroy() {
     this.destroyed = true;
     this.detachReceiver();
+    this.detachConnectionStateHandler();
     this.player.stop(true);
     this.output.destroy();
     this.live.close();
     this.connection = null;
     this.channelId = null;
+  }
+
+  private attachConnectionStateHandler(connection: VoiceConnection) {
+    this.connectionStateHandler = (_oldState, newState) => {
+      if (this.destroyed || this.connection !== connection) {
+        return;
+      }
+
+      if (newState.status === VoiceConnectionStatus.Ready) {
+        this.attachReceiver(connection);
+        return;
+      }
+
+      if (newState.status === VoiceConnectionStatus.Destroyed) {
+        this.detachReceiver();
+        this.live.close();
+        this.connection = null;
+        this.channelId = null;
+      }
+    };
+    connection.on('stateChange', this.connectionStateHandler);
+  }
+
+  private detachConnectionStateHandler() {
+    if (this.connection && this.connectionStateHandler) {
+      this.connection.off('stateChange', this.connectionStateHandler);
+    }
+    this.connectionStateHandler = null;
   }
 
   private attachReceiver(connection: VoiceConnection) {

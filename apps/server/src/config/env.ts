@@ -33,8 +33,7 @@ const envSchema = z.object({
   DISCORD_APPLICATION_ID: z.string().optional(),
   DISCORD_PUBLIC_KEY: z.string().optional(),
   DISCORD_GUILD_ID: z.string().optional(),
-  DISCORD_REGISTER_GLOBAL_COMMANDS: z.coerce.boolean().default(false),
-  DISCORD_GEMINI_MODEL: z.string().default('gemini-2.5-flash')
+  DISCORD_REGISTER_GLOBAL_COMMANDS: z.coerce.boolean().default(false)
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;

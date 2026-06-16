@@ -79,14 +79,16 @@ The Discord plugin uses the shared personality, public Discord-safe memory, and 
 Slash commands:
 
 - `/giada help` - show Discord commands.
-- `/giada listen mode:here` - set the current text channel as the always-listen channel.
+- `/giada listen mode:here` - set the current text channel as the observed channel; Giada decides when a reply is useful.
 - `/giada listen mode:off` - disable always-listen mode; other channels require her name or a bot mention.
 - `/giada voice mode:watch` - watch your current voice channel, join when someone enters, and leave after everyone leaves.
 - `/giada voice mode:off` - disable voice watching.
 - `/giada voice mode:join` - join your current voice channel now.
 - `/giada status` - show current Discord settings.
+- `/giada authorize user:@user` - allow a user to run Giada commands. Discord Administrator or owner only.
+- `/giada deauthorize user:@user` - remove a user's Giada command authorization. Discord Administrator or owner only.
 
-Changing listen/voice-watch settings requires Discord Manage Server permission. Voice channel watching is presence/control only in this foundation; full Discord voice conversation still needs a Discord audio receive/send bridge.
+Running slash commands requires Discord Administrator permission, explicit authorization through `/giada authorize`, or the built-in owner bypass.
 
 Slash command delivery is supported in two modes:
 
