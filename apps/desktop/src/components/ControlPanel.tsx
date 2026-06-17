@@ -46,10 +46,14 @@ export function ControlPanel(props: ControlPanelProps) {
           title="Toggle microphone"
           className={props.mic ? 'active' : ''}
           onClick={() => {
-            const next = !props.mic;
-            props.setMic(next);
-            if (next) void props.client.startMicrophone();
-            else props.client.stopMicrophone();
+            if (props.mic) {
+              props.client.stopMicrophone();
+              props.setMic(false);
+              return;
+            }
+            void props.client.startMicrophone()
+              .then(() => props.setMic(true))
+              .catch(() => props.setMic(false));
           }}
         >
           {props.mic ? <Mic size={18} /> : <MicOff size={18} />}
@@ -58,10 +62,14 @@ export function ControlPanel(props: ControlPanelProps) {
           title="Toggle screen sharing"
           className={props.screen ? 'active' : ''}
           onClick={() => {
-            const next = !props.screen;
-            props.setScreen(next);
-            if (next) void props.client.startScreenShare({ fps: 1, systemAudio: true });
-            else props.client.stopScreenShare();
+            if (props.screen) {
+              props.client.stopScreenShare();
+              props.setScreen(false);
+              return;
+            }
+            void props.client.startScreenShare({ fps: 1, systemAudio: true })
+              .then(() => props.setScreen(true))
+              .catch(() => props.setScreen(false));
           }}
         >
           <MonitorUp size={18} />

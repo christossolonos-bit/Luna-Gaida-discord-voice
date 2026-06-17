@@ -45,6 +45,10 @@ export class LiveSessionManager {
   private passive = false;
   private desiredSurface: LiveSurface | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private sessionId = 0;
+  private currentStatus: 'offline' | 'connecting' | 'connected' | 'error' = 'offline';
+  private currentStatusReason: string | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -61,6 +65,10 @@ export class LiveSessionManager {
     this.emit = emit;
   }
 
+  emitCurrentStatus() {
+    this.emitStatus(this.currentStatus, this.currentStatusReason);
+  }
+
   async connect(surface: LiveSurface = 'desktop') {
     this.desiredSurface = surface;
     if (this.reconnectTimer) {
@@ -68,20 +76,33 @@ export class LiveSessionManager {
       this.reconnectTimer = null;
     }
     if (!this.ai) {
-      this.emit?.({ type: 'status', status: 'error', reason: 'GEMINI_API_KEY is not configured' });
+      this.emitStatus('error', 'GEMINI_API_KEY is not configured');
       return;
     }
     if (this.session) {
+      this.emitStatus('connected');
+      this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
       return;
     }
     if (this.connecting) {
+      this.emitStatus('connecting');
       return this.connecting;
     }
 
-    this.emit?.({ type: 'status', status: 'connecting' });
-    this.connecting = this.open(surface).finally(() => {
-      this.connecting = null;
-    });
+    this.emitStatus('connecting');
+    this.connecting = this.open(surface)
+      .catch((error) => {
+        logger.warn('Gemini Live open failed', {
+          surface,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        this.session = null;
+        this.emitStatus('error', error instanceof Error ? error.message : String(error));
+        this.scheduleReconnect(surface);
+      })
+      .finally(() => {
+        this.connecting = null;
+      });
     return this.connecting;
   }
 
@@ -121,16 +142,20 @@ export class LiveSessionManager {
 
   close() {
     this.desiredSurface = null;
+    this.sessionId += 1;
+    this.reconnectAttempts = 0;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     this.session?.close();
     this.session = null;
-    this.emit?.({ type: 'status', status: 'offline' });
+    this.emitStatus('offline');
   }
 
   private async open(surface: LiveSurface) {
+    const openedSessionId = this.sessionId + 1;
+    this.sessionId = openedSessionId;
     const memoryContext = this.memory
       .listForContext(surface)
       .map((record) => `- [${record.privacy}/${record.source}] ${record.summary ?? record.content}`)
@@ -146,45 +171,96 @@ export class LiveSessionManager {
         : null
     ].filter(Boolean).join('\n');
     const config = this.buildConfig(systemInstruction, surface);
-    this.session = await this.ai!.live.connect({
+    let openedSession: Session | null = null;
+    let sessionEndedDuringOpen = false;
+    const session = await this.ai!.live.connect({
       model: this.config.GEMINI_MODEL,
       config,
       callbacks: {
         onopen: () => {
-          this.emit?.({ type: 'status', status: 'connected' });
+          if (!this.isCurrentSession(openedSessionId, surface)) {
+            return;
+          }
+          this.reconnectAttempts = 0;
+          this.emitStatus('connected');
           this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
         },
         onmessage: (message: LiveServerMessage) => {
+          if (!this.isCurrentSession(openedSessionId, surface)) {
+            return;
+          }
           void this.handleMessage(message, surface);
         },
         onerror: (error) => {
-          logger.error('Gemini Live session error', error);
-          this.session = null;
-          this.emit?.({ type: 'status', status: 'error', reason: error.message });
+          if (!this.isCurrentSession(openedSessionId, surface)) {
+            return;
+          }
+          logger.error('Gemini Live session error', {
+            surface,
+            error: error.message
+          });
+          sessionEndedDuringOpen = true;
+          if (!openedSession || this.session === openedSession) {
+            this.session = null;
+          }
+          this.emitStatus('error', error.message);
           this.scheduleReconnect(surface);
         },
         onclose: (event) => {
-          logger.warn('Gemini Live session closed', event.reason);
-          this.session = null;
-          this.emit?.({ type: 'status', status: 'offline', reason: event.reason });
+          if (!this.isCurrentSession(openedSessionId, surface)) {
+            return;
+          }
+          logger.warn('Gemini Live session closed', {
+            surface,
+            reason: event.reason || null
+          });
+          sessionEndedDuringOpen = true;
+          if (!openedSession || this.session === openedSession) {
+            this.session = null;
+          }
+          this.emitStatus('offline', event.reason);
           this.scheduleReconnect(surface);
         }
       }
     });
+    openedSession = session;
+
+    if (sessionEndedDuringOpen || this.desiredSurface !== surface || this.sessionId !== openedSessionId) {
+      session.close();
+      return;
+    }
+    this.session = session;
   }
 
   private scheduleReconnect(surface: LiveSurface) {
     if (this.desiredSurface !== surface || this.reconnectTimer || !this.ai) {
       return;
     }
+    const delayMs = Math.min(1_500 * 2 ** this.reconnectAttempts, 30_000);
+    this.reconnectAttempts += 1;
+    logger.warn('Scheduling Gemini Live reconnect', {
+      surface,
+      delayMs,
+      attempt: this.reconnectAttempts
+    });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.desiredSurface === surface && !this.session) {
-        void this.connect(surface).catch((error) => {
-          logger.warn('Gemini Live reconnect failed', error instanceof Error ? error.message : String(error));
-        });
+        void this.connect(surface);
       }
-    }, 1_500);
+    }, delayMs);
+  }
+
+  private isCurrentSession(sessionId: number, surface: LiveSurface) {
+    return this.sessionId === sessionId && this.desiredSurface === surface;
+  }
+
+  private emitStatus(status: 'offline' | 'connecting' | 'connected' | 'error', reason?: string) {
+    this.currentStatus = status;
+    this.currentStatusReason = reason;
+    this.emit?.(reason
+      ? { type: 'status', status, reason }
+      : { type: 'status', status });
   }
 
   private decorateUserText(text: string) {

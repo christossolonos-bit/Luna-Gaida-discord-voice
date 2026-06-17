@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { PersonalityService } from '../src/personality/service.js';
 import { assertDiscordSafe, classifyText, redactSecrets } from '../src/policy/privacy.js';
 
 describe('privacy policy', () => {
@@ -14,5 +18,23 @@ describe('privacy policy', () => {
     const result = assertDiscordSafe('my local file is /Users/alice/private/secrets.txt');
     expect(result.ok).toBe(true);
     expect(result.text).not.toContain('/Users/alice');
+  });
+});
+
+describe('personality boundaries', () => {
+  it('allows NSFW on web but gates Discord NSFW by channel setting', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'giada-personality-'));
+    try {
+      const personality = new PersonalityService(join(dir, 'giada.sqlite'));
+      const webInstruction = personality.buildInstruction('', 'browser');
+      const discordSafeInstruction = personality.buildInstruction('', 'discord', { discordNsfwAllowed: false });
+      const discordNsfwInstruction = personality.buildInstruction('', 'discord', { discordNsfwAllowed: true });
+
+      expect(webInstruction).toContain('Web/browser surface: NSFW adult content is allowed');
+      expect(discordSafeInstruction).toContain('this channel is not marked age-restricted/NSFW');
+      expect(discordNsfwInstruction).toContain('this channel is marked age-restricted/NSFW');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

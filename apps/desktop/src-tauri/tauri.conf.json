@@ -35,7 +35,7 @@
         "transparent": true,
         "shadow": false,
         "resizable": false,
-        "backgroundColor": "#00000000",
+        "backgroundColor": "#00000001",
         "backgroundThrottling": "disabled"
       }
     ],

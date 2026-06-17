@@ -27,7 +27,8 @@ const modelUrls: Record<string, string> = {
   AI_Casual: '/assets/models/AI_Casual.vrm',
   AI_Future: '/assets/models/AI_Future.vrm',
   AI_Military: '/assets/models/AI_Military.vrm',
-  AI_Party: '/assets/models/AI_Party.vrm'
+  AI_Party: '/assets/models/AI_Party.vrm',
+  AI_Nude: '/assets/models/AI_Nude.vrm'
 };
 
 const animationByState: Record<CompanionState, string> = {
@@ -37,6 +38,13 @@ const animationByState: Record<CompanionState, string> = {
   speaking: '/assets/animations/Idle.fbx',
   reacting: '/assets/animations/Angry.fbx'
 };
+
+interface LoadedAvatarModel {
+  modelName: string;
+  vrm: VRMCore;
+  mixer: THREE.AnimationMixer;
+  actions: Map<CompanionState, THREE.AnimationAction>;
+}
 
 export function AvatarStage({ state, expression, modelName = 'AI_Maid', analyser, floating = false }: AvatarStageProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -99,6 +107,11 @@ class AvatarRuntime {
   private lastFitAt = 0;
   private envelopeWidth = 0;
   private envelopeHeight = 0;
+  private modelChangeRotation: { startedAt: number; durationMs: number } | null = null;
+  private transitionParticles: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial> | null = null;
+  private transitionParticleVelocities: Float32Array | null = null;
+  private transitionParticleAge = 0;
+  private transitionParticleDuration = 0;
 
   constructor(private readonly container: HTMLElement, private readonly floating: boolean) {
     this.renderer = new THREE.WebGLRenderer({
@@ -109,7 +122,7 @@ class AvatarRuntime {
     });
     this.renderer.autoClear = true;
     this.renderer.setPixelRatio(window.devicePixelRatio);
-    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.setClearColor(0x000000, floating ? 0.001 : 0);
     this.renderer.domElement.style.display = 'block';
     this.renderer.domElement.style.background = 'transparent';
     this.container.appendChild(this.renderer.domElement);
@@ -134,6 +147,7 @@ class AvatarRuntime {
   dispose() {
     window.removeEventListener('resize', this.resize);
     cancelAnimationFrame(this.frame);
+    this.stopModelChangeParticles();
     this.renderer.dispose();
     this.currentVrm?.scene.removeFromParent();
   }
@@ -168,16 +182,21 @@ class AvatarRuntime {
   private async changeModel(modelName: string) {
     this.modelChangeInProgress = true;
     try {
-      await this.playSpinOnce(0.55);
-      await this.loadModel(modelName);
-      await this.playSpinOnce(0.45);
+      await this.playModelChangeTransition(modelName);
       this.setState(this.currentState);
     } finally {
+      this.currentVrm?.scene.rotation.set(0, 0, 0);
+      this.modelChangeRotation = null;
+      this.stopModelChangeParticles();
       this.modelChangeInProgress = false;
     }
   }
 
   private async loadModel(modelName: string) {
+    this.installModel(await this.prepareModel(modelName));
+  }
+
+  private async prepareModel(modelName: string): Promise<LoadedAvatarModel> {
     const url = modelUrls[modelName];
     if (!url) {
       throw new Error(`Unknown avatar model: ${modelName}`);
@@ -206,13 +225,23 @@ class AvatarRuntime {
     nextMixer.update(0.016);
     vrm.update(0.016);
 
+    return {
+      modelName,
+      vrm,
+      mixer: nextMixer,
+      actions: nextActions
+    };
+  }
+
+  private installModel(model: LoadedAvatarModel) {
     const previousVrm = this.currentVrm;
     this.mixer?.stopAllAction();
-    this.currentVrm = vrm;
-    this.currentModelName = modelName;
-    this.mixer = nextMixer;
-    this.animationActions = nextActions;
-    this.scene.add(vrm.scene);
+    model.vrm.scene.rotation.y = this.currentModelChangeRotationY();
+    this.currentVrm = model.vrm;
+    this.currentModelName = model.modelName;
+    this.mixer = model.mixer;
+    this.animationActions = model.actions;
+    this.scene.add(model.vrm.scene);
 
     if (previousVrm) {
       this.scene.remove(previousVrm.scene);
@@ -223,18 +252,19 @@ class AvatarRuntime {
     this.frameCameraToAvatar();
   }
 
-  private async playSpinOnce(maxSeconds: number) {
-    if (!this.currentVrm || !this.mixer) {
+  private async playModelChangeTransition(modelName: string) {
+    const nextModel = await this.prepareModel(modelName);
+    if (!this.currentVrm) {
+      this.installModel(nextModel);
       return;
     }
-    const clip = await this.loadMixamoAnimation('/assets/animations/Spin In Place.fbx', this.currentVrm);
-    const action = this.mixer.clipAction(clip);
-    action.reset();
-    action.setLoop(THREE.LoopOnce, 1);
-    action.clampWhenFinished = true;
-    action.fadeIn(0.08).play();
-    await wait(Math.min(maxSeconds, clip.duration) * 1000);
-    action.fadeOut(0.08);
+
+    const durationMs = 1050;
+    this.modelChangeRotation = { startedAt: performance.now(), durationMs };
+    this.startModelChangeParticles(durationMs);
+    await wait(durationMs * 0.5);
+    this.installModel(nextModel);
+    await wait(durationMs * 0.5);
   }
 
   private async loadMixamoAnimation(url: string, vrm: VRMCore) {
@@ -294,6 +324,8 @@ class AvatarRuntime {
   private animate = () => {
     const delta = this.clock.getDelta();
     this.mixer?.update(delta);
+    this.updateModelChangeRotation();
+    this.updateModelChangeParticles(delta);
     this.updateBlink(delta);
     this.updateLipSync();
     this.applyExpressionLayer();
@@ -304,6 +336,119 @@ class AvatarRuntime {
     this.renderer.clear(true, true, true);
     this.renderer.render(this.scene, this.camera);
   };
+
+  private updateModelChangeRotation() {
+    if (!this.modelChangeRotation || !this.currentVrm) {
+      return;
+    }
+    const progress = clamp((performance.now() - this.modelChangeRotation.startedAt) / this.modelChangeRotation.durationMs, 0, 1);
+    this.currentVrm.scene.rotation.y = this.currentModelChangeRotationY(progress);
+    if (progress >= 1) {
+      this.currentVrm.scene.rotation.y = 0;
+      this.modelChangeRotation = null;
+    }
+  }
+
+  private currentModelChangeRotationY(progress = this.currentModelChangeProgress()) {
+    return easeInOutCubic(progress) * Math.PI * 2;
+  }
+
+  private currentModelChangeProgress() {
+    if (!this.modelChangeRotation) {
+      return 0;
+    }
+    return clamp((performance.now() - this.modelChangeRotation.startedAt) / this.modelChangeRotation.durationMs, 0, 1);
+  }
+
+  private startModelChangeParticles(durationMs: number) {
+    this.stopModelChangeParticles();
+    if (!this.currentVrm) {
+      return;
+    }
+
+    this.bounds.setFromObject(this.currentVrm.scene);
+    this.bounds.getSize(this.boundsSize);
+    this.bounds.getCenter(this.boundsCenter);
+
+    const count = 180;
+    const positions = new Float32Array(count * 3);
+    const velocities = new Float32Array(count * 3);
+    const height = Math.max(this.boundsSize.y, 1.4);
+    const radius = Math.max(this.boundsSize.x * 0.62, 0.42);
+
+    for (let index = 0; index < count; index += 1) {
+      const offset = index * 3;
+      const angle = Math.random() * Math.PI * 2;
+      const heightOffset = (Math.random() - 0.5) * height;
+      const ringRadius = radius * (0.65 + Math.random() * 0.65);
+      const spinDirection = Math.random() > 0.5 ? 1 : -1;
+
+      positions[offset] = this.boundsCenter.x + Math.cos(angle) * ringRadius;
+      positions[offset + 1] = this.boundsCenter.y + heightOffset;
+      positions[offset + 2] = this.boundsCenter.z + Math.sin(angle) * ringRadius;
+
+      velocities[offset] = Math.cos(angle + spinDirection * Math.PI * 0.5) * (0.45 + Math.random() * 0.55);
+      velocities[offset + 1] = 0.2 + Math.random() * 0.8;
+      velocities[offset + 2] = Math.sin(angle + spinDirection * Math.PI * 0.5) * (0.45 + Math.random() * 0.55);
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const material = new THREE.PointsMaterial({
+      color: 0x8fe8ff,
+      size: 0.035,
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+    const particles = new THREE.Points(geometry, material);
+    particles.renderOrder = 20;
+    this.scene.add(particles);
+    this.transitionParticles = particles;
+    this.transitionParticleVelocities = velocities;
+    this.transitionParticleAge = 0;
+    this.transitionParticleDuration = durationMs / 1000;
+  }
+
+  private updateModelChangeParticles(delta: number) {
+    if (!this.transitionParticles || !this.transitionParticleVelocities) {
+      return;
+    }
+
+    this.transitionParticleAge += delta;
+    const geometry = this.transitionParticles.geometry;
+    const positionAttribute = geometry.getAttribute('position') as THREE.BufferAttribute;
+    const positions = positionAttribute.array as Float32Array;
+    const velocities = this.transitionParticleVelocities;
+
+    for (let index = 0; index < positions.length; index += 3) {
+      positions[index] = (positions[index] ?? 0) + (velocities[index] ?? 0) * delta;
+      positions[index + 1] = (positions[index + 1] ?? 0) + (velocities[index + 1] ?? 0) * delta;
+      positions[index + 2] = (positions[index + 2] ?? 0) + (velocities[index + 2] ?? 0) * delta;
+    }
+    positionAttribute.needsUpdate = true;
+
+    const progress = clamp(this.transitionParticleAge / Math.max(this.transitionParticleDuration, 0.001), 0, 1);
+    this.transitionParticles.material.opacity = 0.92 * (1 - easeInCubic(progress));
+
+    if (progress >= 1) {
+      this.stopModelChangeParticles();
+    }
+  }
+
+  private stopModelChangeParticles() {
+    if (!this.transitionParticles) {
+      return;
+    }
+    this.scene.remove(this.transitionParticles);
+    this.transitionParticles.geometry.dispose();
+    this.transitionParticles.material.dispose();
+    this.transitionParticles = null;
+    this.transitionParticleVelocities = null;
+    this.transitionParticleAge = 0;
+    this.transitionParticleDuration = 0;
+  }
 
   private frameCameraToAvatar() {
     if (!this.currentVrm) {
@@ -348,9 +493,7 @@ class AvatarRuntime {
     const targetWidthRaw = clamp(Math.ceil(this.boundsSize.x * pixelsPerWorldUnit + 48), 132, 360);
     const targetHeightRaw = clamp(Math.ceil(this.boundsSize.y * pixelsPerWorldUnit + 18), 420, 720);
     if (targetWidthRaw > this.envelopeWidth) this.envelopeWidth = targetWidthRaw;
-    else this.envelopeWidth += (targetWidthRaw - this.envelopeWidth) * 0.12;
     if (targetHeightRaw > this.envelopeHeight) this.envelopeHeight = targetHeightRaw;
-    else this.envelopeHeight += (targetHeightRaw - this.envelopeHeight) * 0.12;
 
     const targetWidth = Math.ceil(this.envelopeWidth);
     const targetHeight = Math.ceil(this.envelopeHeight);
@@ -460,6 +603,16 @@ function average(data: Uint8Array, start: number, end: number) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function easeInOutCubic(value: number) {
+  return value < 0.5
+    ? 4 * value * value * value
+    : 1 - Math.pow(-2 * value + 2, 3) / 2;
+}
+
+function easeInCubic(value: number) {
+  return value * value * value;
 }
 
 function wait(ms: number) {

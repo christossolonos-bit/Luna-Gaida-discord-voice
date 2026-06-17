@@ -16,7 +16,7 @@ body {
 }
 
 body.avatar-window {
-  background: transparent;
+  background: rgba(0, 0, 0, 0.001);
 }
 
 button,
@@ -176,8 +176,9 @@ body.avatar-window #root {
 .floating-shell {
   width: 100vw;
   height: 100vh;
-  background: transparent;
+  background: rgba(0, 0, 0, 0.001);
   cursor: grab;
+  contain: paint;
 }
 
 .avatar-stage.floating {

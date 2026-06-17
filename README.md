@@ -104,6 +104,15 @@ curl http://127.0.0.1:8787/discord/status
 curl -X POST http://127.0.0.1:8787/discord/register-commands
 ```
 
+Discord GIF replies use a configured GIF API instead of model-selected Google Search results. Set one or both of these optional `.env` values:
+
+```bash
+GIF_PROVIDER=auto # auto, giphy, or tenor
+GIPHY_API_KEY=your_giphy_key
+TENOR_API_KEY=your_tenor_key
+TENOR_CLIENT_KEY=giada-assistant
+```
+
 If `/giada` times out and neither `Received Discord slash command` nor `Received Discord HTTP interaction` appears in the backend logs, Discord is not sending interactions to this process. Check that the bot token belongs to the same Discord application whose `/giada` command you are using, and either clear the Developer Portal Interactions Endpoint URL for gateway mode or point it at a public tunnel for this backend.
 
 ## Development Checks

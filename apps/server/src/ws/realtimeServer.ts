@@ -50,17 +50,14 @@ export function attachRealtimeServer(server: Server, createLive: (context: Realt
     liveContexts.get(context)?.close();
   };
 
-  const sendStatus = (socket: WebSocket, context: RealtimeContext) => {
-    getLive(context);
-    if (socket.readyState === socket.OPEN) {
-      socket.send(JSON.stringify({ type: 'status', status: 'offline', context }));
-    }
+  const sendStatus = (context: RealtimeContext) => {
+    getLive(context).emitCurrentStatus();
   };
 
   wss.on('connection', (socket: WebSocket) => {
     let context: RealtimeContext = 'app';
     sockets.set(socket, context);
-    sendStatus(socket, context);
+    sendStatus(context);
 
     socket.on('message', (raw) => {
       try {
@@ -72,7 +69,7 @@ export function attachRealtimeServer(server: Server, createLive: (context: Realt
             context = nextContext;
             sockets.set(socket, context);
             closeContextIfIdle(previousContext);
-            sendStatus(socket, context);
+            sendStatus(context);
           }
           void getLive(context).connect(toLiveSurface(context));
         } else if (parsed.type === 'disconnect') {

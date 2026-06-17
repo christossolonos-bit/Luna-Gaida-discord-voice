@@ -20,6 +20,9 @@ export type RealtimeEvent =
 export class RealtimeClient extends EventTarget {
   readonly player = new PcmPlayer();
   private socket: WebSocket | null = null;
+  private connecting: Promise<void> | null = null;
+  private reconnectTimer: number | null = null;
+  private manuallyDisconnected = false;
   private micStream: MediaStream | null = null;
   private micContext: AudioContext | null = null;
   private micProcessor: ScriptProcessorNode | null = null;
@@ -32,25 +35,83 @@ export class RealtimeClient extends EventTarget {
     this.audioEnabled = options.audioEnabled ?? true;
   }
 
-  connect() {
-    if (this.socket && this.socket.readyState <= WebSocket.OPEN) {
-      return;
+  connect(): Promise<void> {
+    this.manuallyDisconnected = false;
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      return Promise.resolve();
     }
-    this.socket = new WebSocket('ws://127.0.0.1:8787/realtime');
-    this.socket.addEventListener('open', () => this.send({ type: 'connect', surface: 'app' }));
-    this.socket.addEventListener('message', (message) => {
+    if (this.connecting) {
+      return this.connecting;
+    }
+    if (this.reconnectTimer) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.dispatchEvent(new CustomEvent<RealtimeEvent>('event', { detail: { type: 'status', status: 'connecting' } }));
+    const socket = new WebSocket('ws://127.0.0.1:8787/realtime');
+    this.socket = socket;
+    this.connecting = new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        socket.removeEventListener('open', handleOpen);
+        socket.removeEventListener('error', handleError);
+        socket.removeEventListener('close', handleCloseBeforeOpen);
+      };
+      const handleOpen = () => {
+        cleanup();
+        this.connecting = null;
+        this.send({ type: 'connect', surface: 'app' });
+        resolve();
+      };
+      const handleError = () => {
+        cleanup();
+        this.connecting = null;
+        reject(new Error('Realtime WebSocket connection failed'));
+      };
+      const handleCloseBeforeOpen = () => {
+        cleanup();
+        this.connecting = null;
+        reject(new Error('Realtime WebSocket closed before opening'));
+      };
+
+      socket.addEventListener('open', handleOpen);
+      socket.addEventListener('error', handleError);
+      socket.addEventListener('close', handleCloseBeforeOpen);
+    }).catch((error) => {
+      this.dispatchEvent(new CustomEvent<RealtimeEvent>('event', {
+        detail: { type: 'status', status: 'offline', reason: error instanceof Error ? error.message : String(error) }
+      }));
+      this.scheduleReconnect();
+      throw error;
+    });
+    socket.addEventListener('message', (message) => {
       const event = JSON.parse(message.data as string) as RealtimeEvent;
       if (event.type === 'audio' && this.audioEnabled) {
         void this.player.playBase64Pcm(event.data);
       }
       this.dispatchEvent(new CustomEvent<RealtimeEvent>('event', { detail: event }));
     });
-    this.socket.addEventListener('close', () => {
-      this.dispatchEvent(new CustomEvent<RealtimeEvent>('event', { detail: { type: 'status', status: 'offline' } }));
+    socket.addEventListener('error', () => {
+      this.dispatchEvent(new CustomEvent<RealtimeEvent>('event', {
+        detail: { type: 'status', status: 'offline', reason: 'Realtime WebSocket error' }
+      }));
     });
+    socket.addEventListener('close', () => {
+      this.dispatchEvent(new CustomEvent<RealtimeEvent>('event', { detail: { type: 'status', status: 'offline' } }));
+      if (this.socket === socket) {
+        this.socket = null;
+        this.connecting = null;
+      }
+      this.scheduleReconnect();
+    });
+    return this.connecting;
   }
 
   disconnect() {
+    this.manuallyDisconnected = true;
+    if (this.reconnectTimer) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.stopMicrophone();
     this.stopScreenShare();
     this.send({ type: 'disconnect' });
@@ -63,7 +124,7 @@ export class RealtimeClient extends EventTarget {
     if (!trimmed) {
       return;
     }
-    this.connect();
+    void this.connect().catch(() => undefined);
     this.dispatchEvent(new CustomEvent<RealtimeEvent>('event', {
       detail: { type: 'transcript', speaker: 'user', text: trimmed, final: true }
     }));
@@ -76,16 +137,18 @@ export class RealtimeClient extends EventTarget {
   }
 
   setPassive(passive: boolean) {
+    void this.connect().catch(() => undefined);
     this.send({ type: 'mode', passive });
   }
 
   interrupt() {
     this.player.stopQueuedAudio();
+    void this.connect().catch(() => undefined);
     this.send({ type: 'interrupt' });
   }
 
   async startMicrophone() {
-    this.connect();
+    await this.connect();
     this.micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -115,14 +178,22 @@ export class RealtimeClient extends EventTarget {
   }
 
   async startScreenShare(options: { systemAudio: boolean; fps: number }) {
-    this.connect();
+    await this.connect();
     this.screenStream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: options.fps, max: 5 }, width: { max: 1920 } },
       audio: options.systemAudio
     });
     const video = document.createElement('video');
     video.muted = true;
+    video.playsInline = true;
     video.srcObject = this.screenStream;
+    await new Promise<void>((resolve) => {
+      if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+        resolve();
+        return;
+      }
+      video.addEventListener('loadedmetadata', () => resolve(), { once: true });
+    });
     await video.play();
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
@@ -140,6 +211,7 @@ export class RealtimeClient extends EventTarget {
         this.send({ type: 'video', data, mimeType: 'image/jpeg' });
       }
     };
+    capture();
     this.screenTimer = window.setInterval(capture, 1000 / Math.max(1, Math.min(options.fps, 5)));
     this.screenStream.getVideoTracks()[0]?.addEventListener('ended', () => this.stopScreenShare());
   }
@@ -157,5 +229,15 @@ export class RealtimeClient extends EventTarget {
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify(payload));
     }
+  }
+
+  private scheduleReconnect() {
+    if (this.manuallyDisconnected || this.reconnectTimer) {
+      return;
+    }
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connect().catch(() => undefined);
+    }, 1500);
   }
 }

@@ -33,7 +33,11 @@ const envSchema = z.object({
   DISCORD_APPLICATION_ID: z.string().optional(),
   DISCORD_PUBLIC_KEY: z.string().optional(),
   DISCORD_GUILD_ID: z.string().optional(),
-  DISCORD_REGISTER_GLOBAL_COMMANDS: z.coerce.boolean().default(false)
+  DISCORD_REGISTER_GLOBAL_COMMANDS: z.coerce.boolean().default(false),
+  GIF_PROVIDER: z.enum(['auto', 'giphy', 'tenor']).default('auto'),
+  GIPHY_API_KEY: z.string().optional(),
+  TENOR_API_KEY: z.string().optional(),
+  TENOR_CLIENT_KEY: z.string().default('giada-assistant')
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;

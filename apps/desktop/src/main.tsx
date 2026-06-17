@@ -33,7 +33,7 @@ function App() {
       }
     };
     client.addEventListener('event', handler);
-    client.connect();
+    void client.connect().catch(() => undefined);
     return () => client.removeEventListener('event', handler);
   }, [client]);
 

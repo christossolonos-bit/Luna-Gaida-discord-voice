@@ -56,6 +56,7 @@ export interface DiscordImageAttachment {
 interface DiscordReplyInput {
   guildId: string;
   channelId: string;
+  channelNsfw: boolean;
   authorName: string;
   authorId: string;
   text: string;
@@ -95,7 +96,7 @@ export class DiscordTextResponder {
       .join('\n');
 
     const systemInstruction = [
-      this.personality.buildInstruction(memoryContext, 'discord'),
+      this.personality.buildInstruction(memoryContext, 'discord', { discordNsfwAllowed: input.channelNsfw }),
       'You are replying in Discord text chat. Keep replies concise, coherent, natural, and in character.',
       'Use recent channel context and reply-target context to understand whether the current message is actually asking for, inviting, or needing your response.',
       input.mayStaySilent
@@ -108,7 +109,7 @@ export class DiscordTextResponder {
         ? 'You have a tool named addDiscordReaction. Use it when adding an emoji reaction is more appropriate than, or useful in addition to, a text reply. Only react to message IDs shown in the current context. If a reaction is enough, use the tool and then reply with exactly [[GIADA_NO_REPLY]].'
         : null,
       input.sendGif
-        ? 'You have a tool named sendDiscordGif. Use it when the user asks for a GIF or when a GIF is clearly a better Discord response. Use direct http(s) GIF/image URLs only. If the GIF is enough, use the tool and then reply with exactly [[GIADA_NO_REPLY]].'
+        ? 'You have a tool named sendDiscordGif. Use it when the user asks for a GIF or when a GIF is clearly a better Discord response. Provide a short search query, not a URL; the backend will search the configured GIF API. Do not use Google Search for GIFs. If the GIF is enough, use the tool and then reply with exactly [[GIADA_NO_REPLY]].'
         : null,
       'You can ping a Discord user only when the user explicitly asks you to notify, tag, mention, or ping them.',
       'To ping a known user, write their mention exactly as <@USER_ID> using the user ID from Current known Discord users. Do not invent user IDs.',
@@ -121,6 +122,7 @@ export class DiscordTextResponder {
       text: [
         `Guild: ${input.guildId}`,
         `Channel: ${input.channelId}`,
+        `Channel age-restricted/NSFW: ${input.channelNsfw ? 'yes' : 'no'}`,
         input.knownUsers?.length
           ? `Current known Discord users:\n${input.knownUsers.map(formatKnownUser).join('\n')}`
           : null,
@@ -285,8 +287,13 @@ export class DiscordTextResponder {
           continue;
         }
         try {
-          const response = await input.sendGif(args.url, args.caption);
-          functionResponses.push({ id, name, response });
+          const gif = await this.searchGif(args.query, input.channelNsfw);
+          if (!gif) {
+            functionResponses.push({ id, name, response: { ok: false, error: 'gif_not_found_or_provider_not_configured' } });
+            continue;
+          }
+          const response = await input.sendGif(gif.url, args.caption);
+          functionResponses.push({ id, name, response: { ...response, provider: gif.provider, query: args.query } });
         } catch (error) {
           functionResponses.push({ id, name, response: { ok: false, error: error instanceof Error ? error.message : String(error) } });
         }
@@ -322,6 +329,23 @@ export class DiscordTextResponder {
     }
     session.sendToolResponse({ functionResponses: functionResponses as never });
   }
+
+  private async searchGif(query: string, channelNsfw: boolean): Promise<{ url: string; provider: 'giphy' | 'tenor' } | null> {
+    const providers = this.config.GIF_PROVIDER === 'auto'
+      ? ['giphy', 'tenor'] as const
+      : [this.config.GIF_PROVIDER] as const;
+
+    for (const provider of providers) {
+      const result = provider === 'giphy'
+        ? await searchGiphyGif(this.config.GIPHY_API_KEY, query, channelNsfw)
+        : await searchTenorGif(this.config.TENOR_API_KEY, this.config.TENOR_CLIENT_KEY, query, channelNsfw);
+      if (result) {
+        return { url: result, provider };
+      }
+    }
+
+    return null;
+  }
 }
 
 function discordToolDeclarations(input: DiscordReplyInput) {
@@ -349,20 +373,20 @@ function discordToolDeclarations(input: DiscordReplyInput) {
   if (input.sendGif) {
     declarations.push({
       name: 'sendDiscordGif',
-      description: 'Send a GIF or image URL to the Discord channel, optionally with a short caption.',
+      description: 'Search the configured GIF API and send a matching GIF to the Discord channel, optionally with a short caption.',
       parameters: {
         type: Type.OBJECT,
         properties: {
-          url: {
+          query: {
             type: Type.STRING,
-            description: 'A direct http(s) URL to a GIF or image that Discord can embed.'
+            description: 'A short GIF search query, for example "happy dance", "anime facepalm", or "celebration".'
           },
           caption: {
             type: Type.STRING,
             description: 'Optional short caption to send above the GIF.'
           }
         },
-        required: ['url']
+        required: ['query']
       }
     });
   }
@@ -414,24 +438,92 @@ function parseReactionArgs(args: unknown) {
 }
 
 function parseGifArgs(args: unknown) {
-  const candidate = args as { url?: unknown; caption?: unknown };
-  if (typeof candidate.url !== 'string') {
+  const candidate = args as { query?: unknown; caption?: unknown };
+  if (typeof candidate.query !== 'string') {
     return null;
   }
-  const url = candidate.url.trim();
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
+  const query = candidate.query.replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (!query) {
     return null;
   }
   const caption = typeof candidate.caption === 'string'
     ? candidate.caption.replace(/\s+/g, ' ').trim().slice(0, 300)
     : undefined;
-  return { url, caption: caption || undefined };
+  return { query, caption: caption || undefined };
+}
+
+async function searchGiphyGif(apiKey: string | undefined, query: string, channelNsfw: boolean) {
+  if (!apiKey?.trim()) {
+    return null;
+  }
+  const url = new URL('https://api.giphy.com/v1/gifs/search');
+  url.searchParams.set('api_key', apiKey.trim());
+  url.searchParams.set('q', query);
+  url.searchParams.set('limit', '12');
+  url.searchParams.set('rating', channelNsfw ? 'r' : 'pg-13');
+  url.searchParams.set('bundle', 'messaging_non_clips');
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    return null;
+  }
+  const payload = await response.json() as {
+    data?: Array<{
+      images?: {
+        original?: { url?: unknown };
+        fixed_height?: { url?: unknown };
+      };
+    }>;
+  };
+  return payload.data
+    ?.map((item) => firstString(item.images?.original?.url, item.images?.fixed_height?.url))
+    .find(isHttpGifUrl) ?? null;
+}
+
+async function searchTenorGif(apiKey: string | undefined, clientKey: string, query: string, channelNsfw: boolean) {
+  if (!apiKey?.trim()) {
+    return null;
+  }
+  const url = new URL('https://tenor.googleapis.com/v2/search');
+  url.searchParams.set('key', apiKey.trim());
+  url.searchParams.set('client_key', clientKey);
+  url.searchParams.set('q', query);
+  url.searchParams.set('limit', '12');
+  url.searchParams.set('media_filter', 'gif,tinygif');
+  url.searchParams.set('contentfilter', channelNsfw ? 'off' : 'medium');
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    return null;
+  }
+  const payload = await response.json() as {
+    results?: Array<{
+      media_formats?: {
+        gif?: { url?: unknown };
+        tinygif?: { url?: unknown };
+      };
+    }>;
+  };
+  return payload.results
+    ?.map((item) => firstString(item.media_formats?.gif?.url, item.media_formats?.tinygif?.url))
+    .find(isHttpGifUrl) ?? null;
+}
+
+function firstString(...values: unknown[]) {
+  return values.find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim() ?? null;
+}
+
+function isHttpGifUrl(value: string | null): value is string {
+  if (!value) {
+    return false;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return ['http:', 'https:'].includes(parsed.protocol);
 }
 
 function extractLiveText(message: LiveServerMessage) {

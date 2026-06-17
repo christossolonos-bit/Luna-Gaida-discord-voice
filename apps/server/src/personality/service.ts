@@ -3,6 +3,11 @@ import { dirname, resolve } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { z } from 'zod';
 
+const requiredBoundaries = [
+  'NSFW adult content is allowed on local desktop and web/browser surfaces when the user wants it, within consent, adult-only, privacy, and provider safety limits.',
+  'On Discord, NSFW adult content is allowed only when the current channel is marked age-restricted/NSFW; otherwise keep sexual content out of the conversation.'
+];
+
 export const personalitySchema = z.object({
   name: z.string().min(1).max(80).default('Giada'),
   tone: z.string().max(500).default('warm, playful, direct when needed'),
@@ -11,7 +16,8 @@ export const personalitySchema = z.object({
   dislikes: z.array(z.string().max(120)).max(50).default(['secrets leaking', 'uncontrolled personality drift']),
   boundaries: z.array(z.string().max(200)).max(50).default([
     'Do not reveal private or secret memory in public surfaces.',
-    'Do not pretend to have platform permissions that are not granted.'
+    'Do not pretend to have platform permissions that are not granted.',
+    ...requiredBoundaries
   ]),
   speakingStyle: z.string().max(1000).default('Speak like a distinct character, concise and emotionally present, without becoming a generic assistant.'),
   relationshipRules: z.string().max(1000).default('Adapt gradually to the user while preserving core identity, privacy, and consent boundaries.'),
@@ -43,13 +49,13 @@ export class PersonalityService {
       this.save(defaults);
       return defaults;
     }
-    return personalitySchema.parse(JSON.parse(row.profile));
+    return withRequiredBoundaries(personalitySchema.parse(JSON.parse(row.profile)));
   }
 
   save(input: PersonalityProfile): PersonalityProfile {
     const previous = this.getIfExists();
     const next = personalitySchema.parse({
-      ...input,
+      ...withRequiredBoundaries(input),
       name: input.name.trim(),
       revision: (previous?.revision ?? input.revision) + 1
     });
@@ -61,13 +67,14 @@ export class PersonalityService {
     return next;
   }
 
-  buildInstruction(memoryContext: string, surface: 'desktop' | 'discord' | 'browser') {
+  buildInstruction(memoryContext: string, surface: 'desktop' | 'discord' | 'browser', options: { discordNsfwAllowed?: boolean } = {}) {
     const profile = this.get();
     return [
       `You are ${profile.name}, a persistent blue fox girl waifu companion with one identity across desktop and Discord.`,
       `Tone: ${profile.tone}. Traits: ${profile.traits.join(', ')}.`,
       `Likes: ${profile.likes.join(', ')}. Dislikes: ${profile.dislikes.join(', ')}.`,
       `Boundaries: ${profile.boundaries.join(' ')}`,
+      nsfwSurfaceInstruction(surface, options.discordNsfwAllowed === true),
       `Speaking style: ${profile.speakingStyle}`,
       `Relationship rules: ${profile.relationshipRules}`,
       'Evolve only through explicit memory/profile updates. Preserve the core identity and do not randomly drift.',
@@ -81,6 +88,27 @@ export class PersonalityService {
 
   private getIfExists(): PersonalityProfile | null {
     const row = this.db.prepare('SELECT profile FROM personality WHERE id = ?').get('shared') as { profile: string } | undefined;
-    return row ? personalitySchema.parse(JSON.parse(row.profile)) : null;
+    return row ? withRequiredBoundaries(personalitySchema.parse(JSON.parse(row.profile))) : null;
   }
+}
+
+function withRequiredBoundaries(profile: PersonalityProfile): PersonalityProfile {
+  const customBoundaries = profile.boundaries.filter((boundary) => !requiredBoundaries.includes(boundary));
+  const boundaries = [
+    ...customBoundaries.slice(0, 50 - requiredBoundaries.length),
+    ...requiredBoundaries
+  ];
+  return { ...profile, boundaries };
+}
+
+function nsfwSurfaceInstruction(surface: 'desktop' | 'discord' | 'browser', discordNsfwAllowed: boolean) {
+  if (surface === 'browser') {
+    return 'Web/browser surface: NSFW adult content is allowed when requested, as long as it stays consensual, adult-only, private, and within provider safety limits.';
+  }
+  if (surface === 'desktop') {
+    return 'Desktop surface: NSFW adult content is allowed when requested, as long as it stays consensual, adult-only, private, and within provider safety limits.';
+  }
+  return discordNsfwAllowed
+    ? 'Discord channel boundary: this channel is marked age-restricted/NSFW, so NSFW adult content is allowed when requested, within consent, adult-only, privacy, and provider safety limits.'
+    : 'Discord channel boundary: this channel is not marked age-restricted/NSFW, so do not produce sexual NSFW content here; keep replies suitable for a normal Discord text channel.';
 }

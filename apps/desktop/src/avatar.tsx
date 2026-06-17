@@ -19,7 +19,7 @@ function FloatingAvatar() {
       if (detail.type === 'avatar.model.change') setModelName(detail.payload.modelName);
     };
     client.addEventListener('event', handler);
-    client.connect();
+    void client.connect().catch(() => undefined);
     return () => client.removeEventListener('event', handler);
   }, [client]);
 

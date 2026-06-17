@@ -334,6 +334,9 @@ export class DiscordPlugin implements GiadaPlugin {
         publicKeyConfigured: Boolean(this.config.DISCORD_PUBLIC_KEY?.trim()),
         guildId: this.config.DISCORD_GUILD_ID ?? null,
         registerGlobalCommands: this.config.DISCORD_REGISTER_GLOBAL_COMMANDS,
+        gifProvider: this.config.GIF_PROVIDER,
+        giphyConfigured: Boolean(this.config.GIPHY_API_KEY?.trim()),
+        tenorConfigured: Boolean(this.config.TENOR_API_KEY?.trim()),
         registrationMode: this.config.DISCORD_GUILD_ID
           ? 'single_guild_rest'
           : this.config.DISCORD_REGISTER_GLOBAL_COMMANDS
@@ -447,9 +450,11 @@ export class DiscordPlugin implements GiadaPlugin {
       await message.channel.sendTyping();
     }
     const context = await this.collectMessageContext(message);
+    const channelNsfw = await this.isMessageChannelNsfw(message);
     const response = await this.responder.reply({
       guildId: message.guildId,
       channelId: message.channelId,
+      channelNsfw,
       authorName: message.member?.displayName ?? message.author.username,
       authorId: message.author.id,
       text: safeInput.text,
@@ -477,6 +482,35 @@ export class DiscordPlugin implements GiadaPlugin {
       privacy: 'public',
       tags: ['discord', message.guildId, message.channelId, 'assistant']
     });
+  }
+
+  private async isMessageChannelNsfw(message: Message) {
+    if (hasBooleanNsfw(message.channel)) {
+      return message.channel.nsfw;
+    }
+
+    const threadParent = getThreadParent(message.channel);
+    if (hasBooleanNsfw(threadParent)) {
+      return threadParent.nsfw;
+    }
+
+    const guild = message.guild;
+    if (!guild) {
+      return false;
+    }
+
+    const fetchedChannel = await guild.channels.fetch(message.channelId).catch(() => null);
+    if (hasBooleanNsfw(fetchedChannel)) {
+      return fetchedChannel.nsfw;
+    }
+
+    const fetchedParentId = getThreadParentId(fetchedChannel) ?? getThreadParentId(message.channel);
+    if (!fetchedParentId) {
+      return false;
+    }
+
+    const fetchedParent = await guild.channels.fetch(fetchedParentId).catch(() => null);
+    return hasBooleanNsfw(fetchedParent) ? fetchedParent.nsfw : false;
   }
 
   private async handleInteraction(interaction: ChatInputCommandInteraction) {
@@ -1591,6 +1625,34 @@ export class DiscordPlugin implements GiadaPlugin {
       });
     }
   }
+}
+
+function hasBooleanNsfw(value: unknown): value is { nsfw: boolean } {
+  return typeof value === 'object'
+    && value !== null
+    && 'nsfw' in value
+    && typeof (value as { nsfw?: unknown }).nsfw === 'boolean';
+}
+
+function getThreadParent(value: unknown) {
+  if (!isThreadLikeChannel(value) || !value.isThread()) {
+    return null;
+  }
+  return value.parent ?? null;
+}
+
+function getThreadParentId(value: unknown) {
+  if (!isThreadLikeChannel(value) || !value.isThread()) {
+    return null;
+  }
+  return typeof value.parentId === 'string' ? value.parentId : null;
+}
+
+function isThreadLikeChannel(value: unknown): value is { isThread: () => boolean; parent?: unknown; parentId?: unknown } {
+  return typeof value === 'object'
+    && value !== null
+    && 'isThread' in value
+    && typeof (value as { isThread?: unknown }).isThread === 'function';
 }
 
 function getHttpSubcommand(payload: DiscordHttpInteraction) {
