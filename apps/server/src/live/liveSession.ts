@@ -1,7 +1,6 @@
 import {
   ActivityHandling,
   Behavior,
-  DynamicRetrievalConfigMode,
   FunctionResponseScheduling,
   GoogleGenAI,
   HarmBlockThreshold,
@@ -59,7 +58,7 @@ export class LiveSessionManager {
     this.ai = config.GEMINI_API_KEY
       ? new GoogleGenAI({ apiKey: config.GEMINI_API_KEY, httpOptions: { apiVersion: config.GEMINI_API_VERSION } })
       : null;
-    this.tools = createToolRegistry();
+    this.tools = createToolRegistry({ searxngUrl: config.SEARXNG_URL });
   }
 
   setEmitter(emit: (event: LiveClientEvent) => void) {
@@ -163,6 +162,7 @@ export class LiveSessionManager {
       .join('\n');
     const systemInstruction = [
       this.personality.buildInstruction(memoryContext, surface),
+      'When you need current web information, links, documentation, or news, use the searchWeb tool. Do not rely on provider Google Search grounding.',
       surface === 'discord'
         ? [
           `You are speaking in a Discord voice channel. Always reply in ${this.config.GIADA_DEFAULT_LANGUAGE} unless the user explicitly asks for or speaks another language.`,
@@ -298,12 +298,6 @@ export class LiveSessionManager {
         { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.OFF }
       ],
       tools: [
-        {
-          googleSearch: {},
-          googleSearchRetrieval: {
-            dynamicRetrievalConfig: { mode: DynamicRetrievalConfigMode.MODE_DYNAMIC }
-          }
-        },
         {
               functionDeclarations: this.tools
                 .filter((tool) => isToolAvailableForSurface(tool, surface))

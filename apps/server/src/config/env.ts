@@ -41,6 +41,7 @@ const envSchema = z.object({
   FFMPEG_BINARY: z.string().default('ffmpeg'),
   DISCORD_MUSIC_VOLUME: z.coerce.number().min(0).max(1).default(0.35),
   DISCORD_MUSIC_DUCK_VOLUME: z.coerce.number().min(0).max(1).default(0.12),
+  SEARXNG_URL: z.string().url().default('http://searxng:8080'),
   GIF_PROVIDER: z.enum(['auto', 'giphy', 'tenor']).default('auto'),
   GIPHY_API_KEY: z.string().optional(),
   TENOR_API_KEY: z.string().optional(),

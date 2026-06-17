@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PersonalityService } from '../src/personality/service.js';
-import { assertDiscordSafe, classifyText, redactSecrets } from '../src/policy/privacy.js';
+import { assertDiscordSafe, classifyText, redactSecrets, sanitizeForDiscord } from '../src/policy/privacy.js';
 
 describe('privacy policy', () => {
   it('classifies obvious credentials as secret', () => {
@@ -18,6 +18,14 @@ describe('privacy policy', () => {
     const result = assertDiscordSafe('my local file is /Users/alice/private/secrets.txt');
     expect(result.ok).toBe(true);
     expect(result.text).not.toContain('/Users/alice');
+  });
+
+  it('removes hidden think blocks from Discord output', () => {
+    expect(sanitizeForDiscord('<think>private reasoning</think>Hello')).toBe('Hello');
+  });
+
+  it('removes dangling hidden think blocks from Discord output', () => {
+    expect(sanitizeForDiscord('Hello\n<think>private reasoning')).toBe('Hello');
   });
 });
 

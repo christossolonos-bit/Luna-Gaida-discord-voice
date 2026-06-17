@@ -24,6 +24,10 @@ export interface MusicController {
   getMusicStatus(): Record<string, unknown>;
 }
 
+export interface ToolRegistryOptions {
+  searxngUrl?: string;
+}
+
 const discordDisabledToolNames = new Set([
   'changeExpression',
   'setAvatarState',
@@ -68,10 +72,33 @@ const musicSeekSchema = z.object({
   positionSeconds: z.number().min(0).max(24 * 60 * 60)
 });
 
+const searchWebSchema = z.object({
+  query: z.string().min(1).max(500),
+  limit: z.number().int().min(1).max(10).optional()
+});
+
 const availableModels = ['AI_Maid', 'AI_Casual', 'AI_Future', 'AI_Military', 'AI_Party', 'AI_Nude'];
 
-export function createToolRegistry(): RegisteredTool[] {
+export function createToolRegistry(options: ToolRegistryOptions = {}): RegisteredTool[] {
   return [
+    {
+      declaration: {
+        name: 'searchWeb',
+        description: 'Search the web using the private SearXNG instance. Use this for current facts, links, documentation, news, or anything that needs web lookup.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            query: { type: 'STRING', description: 'Search query.' },
+            limit: { type: 'NUMBER', description: 'Optional result count from 1 to 10.' }
+          },
+          required: ['query']
+        }
+      },
+      async run(args) {
+        const parsed = searchWebSchema.parse(args);
+        return searchSearxng(options.searxngUrl, parsed.query, parsed.limit ?? 5);
+      }
+    },
     {
       declaration: {
         name: 'writeMemory',
@@ -318,4 +345,60 @@ export function createToolRegistry(): RegisteredTool[] {
       }
     }
   ];
+}
+
+async function searchSearxng(searxngUrl: string | undefined, query: string, limit: number) {
+  if (!searxngUrl?.trim()) {
+    return { ok: false, error: 'searxng_not_configured' };
+  }
+
+  const url = new URL('/search', searxngUrl.trim());
+  url.searchParams.set('q', query);
+  url.searchParams.set('format', 'json');
+  url.searchParams.set('safesearch', '0');
+
+  const response = await fetch(url, {
+    headers: {
+      accept: 'application/json',
+      'user-agent': 'giada-assistant/0.1'
+    }
+  }).catch((error) => ({ ok: false, error } as const));
+
+  if (!response.ok) {
+    const reason = 'error' in response
+      ? response.error instanceof Error ? response.error.message : String(response.error)
+      : await response.text().catch(() => '');
+    return {
+      ok: false,
+      error: 'searxng_request_failed',
+      status: 'status' in response ? response.status : undefined,
+      reason
+    };
+  }
+
+  const payload = await response.json().catch((error) => ({ error })) as {
+    results?: Array<{ title?: unknown; url?: unknown; content?: unknown; engine?: unknown; score?: unknown }>;
+    suggestions?: unknown[];
+    error?: unknown;
+  };
+  if ('error' in payload && payload.error) {
+    return { ok: false, error: 'searxng_invalid_json', reason: payload.error instanceof Error ? payload.error.message : String(payload.error) };
+  }
+
+  const results = (payload.results ?? [])
+    .map((result) => ({
+      title: typeof result.title === 'string' ? result.title : '',
+      url: typeof result.url === 'string' ? result.url : '',
+      snippet: typeof result.content === 'string' ? result.content : '',
+      engine: typeof result.engine === 'string' ? result.engine : undefined,
+      score: typeof result.score === 'number' ? result.score : undefined
+    }))
+    .filter((result) => result.title && result.url)
+    .slice(0, limit);
+
+  return {
+    ok: true,
+    query,
+    results
+  };
 }

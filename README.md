@@ -49,6 +49,34 @@ npm run dev --workspace @giada/server
 npm run tauri:dev --workspace @giada/desktop
 ```
 
+## Docker Compose
+
+The Docker setup runs the backend and a private SearXNG instance for the `searchWeb` tool. SearXNG is not published to the host; only the Giada backend can reach it through the Compose network at `http://searxng:8080`.
+
+Build the backend image:
+
+```bash
+docker compose build giada
+```
+
+Run the backend and SearXNG:
+
+```bash
+docker compose up -d
+```
+
+Follow logs:
+
+```bash
+docker compose logs -f giada
+```
+
+The backend is exposed on `http://localhost:8787`, and SQLite data is stored in `./data` through a bind mount. To build the image without Compose:
+
+```bash
+docker build -t giada-assistant:latest .
+```
+
 ## Gemini Live API
 
 The backend uses the official server-to-server Live API pattern so the Gemini API key never enters frontend code. The current default model is `gemini-live-2.5-flash-native-audio`; set `GEMINI_MODEL` to a different officially supported Live model if needed.
@@ -74,7 +102,7 @@ Official docs:
 
 ## Discord
 
-The Discord plugin uses the shared personality, public Discord-safe memory, and policy redaction. Discord text replies use `DISCORD_GEMINI_MODEL` so the desktop Live audio session is not stolen by channel chat.
+The Discord plugin uses the shared personality, public Discord-safe memory, and policy redaction. Discord text and voice requests are handled through separate Live request paths so channel chat and voice chat do not share a request queue.
 
 Slash commands:
 

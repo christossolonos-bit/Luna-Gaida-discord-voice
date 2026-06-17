@@ -1,0 +1,12 @@
+node_modules
+apps/*/node_modules
+apps/server/dist
+apps/desktop/dist
+apps/desktop/src-tauri/target
+target
+.git
+.env
+.env.local
+data
+*.log
+oldCode

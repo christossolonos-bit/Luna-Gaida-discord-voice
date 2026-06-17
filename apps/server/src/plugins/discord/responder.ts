@@ -1,5 +1,4 @@
 import {
-  DynamicRetrievalConfigMode,
   GoogleGenAI,
   HarmBlockThreshold,
   HarmCategory,
@@ -14,7 +13,7 @@ import {
 import type { AppConfig } from '../../config/env.js';
 import type { MemoryRepository } from '../../memory/repository.js';
 import type { PersonalityService } from '../../personality/service.js';
-import { assertDiscordSafe, sanitizeForDiscord } from '../../policy/privacy.js';
+import { assertDiscordSafe, sanitizeForDiscord, stripThinkBlocks } from '../../policy/privacy.js';
 import { createToolRegistry, isToolAvailableForSurface, type MusicController, type RegisteredTool } from '../../tools/registry.js';
 import { logger } from '../../logging/logger.js';
 
@@ -85,7 +84,7 @@ export class DiscordTextResponder {
     this.ai = config.GEMINI_API_KEY
       ? new GoogleGenAI({ apiKey: config.GEMINI_API_KEY, httpOptions: { apiVersion: config.GEMINI_API_VERSION } })
       : null;
-    this.tools = createToolRegistry().filter((tool) => isToolAvailableForSurface(tool, 'discord'));
+    this.tools = createToolRegistry({ searxngUrl: config.SEARXNG_URL }).filter((tool) => isToolAvailableForSurface(tool, 'discord'));
   }
 
   async reply(input: DiscordReplyInput) {
@@ -101,6 +100,7 @@ export class DiscordTextResponder {
     const systemInstruction = [
       this.personality.buildInstruction(memoryContext, 'discord', { discordNsfwAllowed: input.channelNsfw }),
       'You are replying in Discord text chat. Keep replies concise, coherent, natural, and in character.',
+      'When you need current web information, links, documentation, or news, use the searchWeb tool. Do not rely on provider Google Search grounding.',
       'Never return an empty response. If you should say nothing, reply exactly [[GIADA_NO_REPLY]] instead of blank text, whitespace, punctuation-only text, or filler.',
       'Use recent channel context and reply-target context to understand whether the current message is actually asking for, inviting, or needing your response.',
       'Each user turn includes a reply mode. If the reply mode says the message may be ignored and the current message is not directed at you or does not benefit from your input, reply with exactly [[GIADA_NO_REPLY]].',
@@ -162,10 +162,18 @@ export class DiscordTextResponder {
       });
       return null;
     }
-    if (shouldStaySilent(text)) {
+    const visibleText = stripThinkBlocks(text);
+    if (!visibleText) {
+      logger.warn('Discord text responder returned only hidden think text; treating as no-reply tag', {
+        guildId: input.guildId,
+        channelId: input.channelId
+      });
       return null;
     }
-    const safe = assertDiscordSafe(sanitizeForDiscord(text));
+    if (shouldStaySilent(visibleText)) {
+      return null;
+    }
+    const safe = assertDiscordSafe(sanitizeForDiscord(visibleText));
     return safe.ok ? clampDiscordMessage(safe.text) : safe.text;
   }
 
@@ -300,12 +308,6 @@ export class DiscordTextResponder {
         this.config.GEMINI_MODEL,
         systemInstruction,
         () => [
-          {
-            googleSearch: {},
-            googleSearchRetrieval: {
-              dynamicRetrievalConfig: { mode: DynamicRetrievalConfigMode.MODE_DYNAMIC }
-            }
-          },
           {
             functionDeclarations: [
               ...this.tools.map((tool) => structuredClone(tool.declaration) as Record<string, unknown>),
@@ -824,5 +826,5 @@ function clampDiscordMessage(text: string) {
 }
 
 function shouldStaySilent(text: string) {
-  return text.replace(/\s+/g, ' ').trim() === '[[GIADA_NO_REPLY]]';
+  return stripThinkBlocks(text).replace(/\s+/g, ' ').trim() === '[[GIADA_NO_REPLY]]';
 }

@@ -21,8 +21,15 @@ export function redactSecrets(text: string): string {
   return secretPatterns.reduce((value, pattern) => value.replace(pattern, '[REDACTED_SECRET]'), text);
 }
 
+export function stripThinkBlocks(text: string): string {
+  return text
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
+    .replace(/<think\b[^>]*>[\s\S]*$/gi, '')
+    .trim();
+}
+
 export function sanitizeForDiscord(text: string): string {
-  return redactSecrets(text)
+  return redactSecrets(stripThinkBlocks(text))
     .replace(/\b(?:\/[A-Za-z0-9._ -]+){2,}\b/g, '[LOCAL_PATH]')
     .replace(/\b[A-Z]:\\(?:[^\\\r\n]+\\)+[^\r\n]*/g, '[LOCAL_PATH]');
 }
