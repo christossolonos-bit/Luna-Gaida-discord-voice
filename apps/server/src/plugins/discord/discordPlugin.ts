@@ -1645,9 +1645,26 @@ export class DiscordPlugin implements GiadaPlugin {
   }
 
   private async reply(message: Message, content: string) {
-    await message.reply({
+    const payload = {
       content,
       allowedMentions: allowedMentionsForContent(content)
+    };
+    await message.reply({
+      ...payload,
+      failIfNotExists: false
+    }).catch(async (error) => {
+      if (!isUnknownDiscordMessageReferenceError(error)) {
+        throw error;
+      }
+      logger.warn('Discord reply target disappeared; sending plain channel message instead', {
+        guildId: message.guildId,
+        channelId: message.channelId,
+        messageId: message.id
+      });
+      if (!('send' in message.channel) || typeof message.channel.send !== 'function') {
+        throw error;
+      }
+      await message.channel.send(payload);
     });
   }
 
@@ -1881,6 +1898,11 @@ function allowedMentionsForContent(content: string) {
     parse: [],
     users
   };
+}
+
+function isUnknownDiscordMessageReferenceError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('MESSAGE_REFERENCE_UNKNOWN_MESSAGE') || message.includes('Unknown message');
 }
 
 async function readRequestBody(req: IncomingMessage) {
