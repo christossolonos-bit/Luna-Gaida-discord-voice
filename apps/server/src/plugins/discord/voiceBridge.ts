@@ -38,6 +38,7 @@ interface VoiceBridgeDiagnostics {
   opusBytes: number;
   decodedPcmBytes: number;
   geminiInputBytes: number;
+  textInputs: number;
   geminiActivityStarts: number;
   geminiActivityEnds: number;
   geminiAudioEvents: number;
@@ -52,6 +53,7 @@ interface VoiceBridgeDiagnostics {
   lastOpusAt: string | null;
   lastDecodedAt: string | null;
   lastGeminiInputAt: string | null;
+  lastTextInputAt: string | null;
   lastGeminiActivityStartAt: string | null;
   lastGeminiActivityEndAt: string | null;
   lastGeminiAudioAt: string | null;
@@ -62,7 +64,8 @@ interface VoiceBridgeDiagnostics {
 export class DiscordVoiceBridge {
   private readonly live: LiveSessionManager;
   private readonly player: AudioPlayer;
-  private readonly output = new PassThrough({ highWaterMark: 1024 * 1024 });
+  private output: PassThrough | null = null;
+  private outputEndTimer: ReturnType<typeof setTimeout> | null = null;
   private connection: VoiceConnection | null = null;
   private channelId: string | null = null;
   private speakingHandler: ((userId: string) => void) | null = null;
@@ -86,6 +89,7 @@ export class DiscordVoiceBridge {
     opusBytes: 0,
     decodedPcmBytes: 0,
     geminiInputBytes: 0,
+    textInputs: 0,
     geminiActivityStarts: 0,
     geminiActivityEnds: 0,
     geminiAudioEvents: 0,
@@ -100,6 +104,7 @@ export class DiscordVoiceBridge {
     lastOpusAt: null,
     lastDecodedAt: null,
     lastGeminiInputAt: null,
+    lastTextInputAt: null,
     lastGeminiActivityStartAt: null,
     lastGeminiActivityEndAt: null,
     lastGeminiAudioAt: null,
@@ -133,12 +138,6 @@ export class DiscordVoiceBridge {
     this.player.on('stateChange', (_oldState, newState) => {
       this.diagnostics.playerStatus = newState.status;
     });
-    this.player.on(AudioPlayerStatus.Idle, () => {
-      if (!this.destroyed && !this.output.destroyed) {
-        this.player.play(createAudioResource(this.output, { inputType: StreamType.Raw }));
-      }
-    });
-    this.player.play(createAudioResource(this.output, { inputType: StreamType.Raw }));
   }
 
   attach(connection: VoiceConnection, channelId: string) {
@@ -184,8 +183,8 @@ export class DiscordVoiceBridge {
     this.detachReceiver();
     this.detachUdpDiagnostics();
     this.detachConnectionStateHandler();
+    this.endOutputStream();
     this.player.stop(true);
-    this.output.destroy();
     this.live.close();
     this.connection = null;
     this.channelId = null;
@@ -240,6 +239,28 @@ export class DiscordVoiceBridge {
     };
     connection.receiver.speaking.on('start', this.speakingHandler);
     this.diagnostics.receiverAttached = true;
+  }
+
+  speakTextChatMessage(authorName: string, text: string) {
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    if (!normalized || this.destroyed) {
+      return;
+    }
+    this.diagnostics.textInputs += 1;
+    this.diagnostics.lastTextInputAt = new Date().toISOString();
+    this.inputQueue = this.inputQueue
+      .then(() => this.live.handleInput({
+        type: 'text',
+        text: `Discord voice channel text chat message from ${authorName}: ${normalized}`
+      }, 'discord'))
+      .catch((error) => {
+        this.recordError(error instanceof Error ? error.message : String(error));
+        logger.warn('Failed to forward Discord voice text chat to Gemini Live', {
+          guildId: this.guildId,
+          channelId: this.channelId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
   }
 
   private detachReceiver() {
@@ -472,7 +493,7 @@ export class DiscordVoiceBridge {
       totalGeminiOutputBytes: this.diagnostics.geminiOutputBytes
     });
     const discordPcm = upsampleGeminiPcmForDiscord(pcm24k);
-    if (discordPcm.length > 0 && !this.output.destroyed) {
+    if (discordPcm.length > 0) {
       logger.debug('Discord voice writing audio to Discord output', {
         guildId: this.guildId,
         channelId: this.channelId,
@@ -480,10 +501,47 @@ export class DiscordVoiceBridge {
         playerStatus: this.diagnostics.playerStatus,
         connectionStatus: this.connection?.state.status ?? this.diagnostics.connectionStatus
       });
-      this.output.write(discordPcm);
+      this.writeDiscordOutput(discordPcm);
       this.diagnostics.discordOutputBytes += discordPcm.length;
       this.diagnostics.lastDiscordWriteAt = new Date().toISOString();
     }
+  }
+
+  private writeDiscordOutput(discordPcm: Buffer) {
+    if (this.destroyed) {
+      return;
+    }
+    if (!this.output || this.output.destroyed || this.output.writableEnded) {
+      this.output = new PassThrough({ highWaterMark: 1024 * 1024 });
+      this.player.play(createAudioResource(this.output, { inputType: StreamType.Raw }));
+      this.connection?.subscribe(this.player);
+    }
+    this.output.write(discordPcm);
+    this.scheduleOutputEnd();
+  }
+
+  private scheduleOutputEnd() {
+    if (this.outputEndTimer) {
+      clearTimeout(this.outputEndTimer);
+    }
+    this.outputEndTimer = setTimeout(() => {
+      this.outputEndTimer = null;
+      this.endOutputStream();
+    }, 450);
+  }
+
+  private endOutputStream() {
+    if (this.outputEndTimer) {
+      clearTimeout(this.outputEndTimer);
+      this.outputEndTimer = null;
+    }
+    if (!this.output) {
+      return;
+    }
+    if (!this.output.destroyed && !this.output.writableEnded) {
+      this.output.end();
+    }
+    this.output = null;
   }
 
   private recordError(error: string) {

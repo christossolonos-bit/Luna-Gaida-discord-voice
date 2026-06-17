@@ -46,6 +46,7 @@ const DISCORD_COMMAND_OWNER_USER_ID = '573903151472836609';
 const VOICE_WATCH_RECONCILE_MS = 15_000;
 const VOICE_READY_TIMEOUT_MS = 30_000;
 const VOICE_REJOIN_DELAY_MS = 3_000;
+const VOICE_TEXT_MESSAGE_DEDUPE_MS = 60_000;
 
 const giadaCommand = new SlashCommandBuilder()
   .setName('giada')
@@ -187,6 +188,7 @@ export class DiscordPlugin implements GiadaPlugin {
   private readonly voiceReadyTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly voiceRejoinTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly voiceReadyReconnectAttempts = new Map<string, number>();
+  private readonly voiceTextMessageIds = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly voiceGatewayDiagnostics = new Map<string, DiscordVoiceGatewayDiagnostics>();
   private readonly voiceConnectionDiagnostics = new Map<string, DiscordVoiceConnectionDiagnostics>();
   private readonly diagnosedVoiceConnections = new WeakSet<ReturnType<typeof joinVoiceChannel>>();
@@ -313,6 +315,10 @@ export class DiscordPlugin implements GiadaPlugin {
       clearTimeout(timer);
     }
     this.voiceRejoinTimers.clear();
+    for (const timer of this.voiceTextMessageIds.values()) {
+      clearTimeout(timer);
+    }
+    this.voiceTextMessageIds.clear();
     for (const bridge of this.voiceBridges.values()) {
       bridge.destroy();
     }
@@ -425,8 +431,27 @@ export class DiscordPlugin implements GiadaPlugin {
       return;
     }
 
-    const settings = this.settings.get(message.guildId);
     const addressed = this.isAddressed(message);
+    const voiceTextBridge = this.getConnectedVoiceTextBridge(message, addressed);
+    if (voiceTextBridge) {
+      if (this.hasSeenVoiceTextMessage(message.id)) {
+        return;
+      }
+      const safeInput = assertDiscordSafe(message.content);
+      this.storeMessageAuthorIdentity(message);
+      if (safeInput.text.trim()) {
+        this.memory.write({
+          content: `Discord voice text ${message.guildId}/${message.channelId} ${message.member?.displayName ?? message.author.username}: ${safeInput.text}`,
+          source: 'discord',
+          privacy: 'public',
+          tags: ['discord', 'voice-text', message.guildId, message.channelId]
+        });
+        voiceTextBridge.speakTextChatMessage(message.member?.displayName ?? message.author.username, safeInput.text);
+      }
+      return;
+    }
+
+    const settings = this.settings.get(message.guildId);
     const listeningChannel = settings.listeningChannelId === message.channelId;
     if (!listeningChannel && !addressed) {
       return;
@@ -482,6 +507,36 @@ export class DiscordPlugin implements GiadaPlugin {
       privacy: 'public',
       tags: ['discord', message.guildId, message.channelId, 'assistant']
     });
+  }
+
+  private hasSeenVoiceTextMessage(messageId: string) {
+    if (this.voiceTextMessageIds.has(messageId)) {
+      return true;
+    }
+    const timer = setTimeout(() => {
+      this.voiceTextMessageIds.delete(messageId);
+    }, VOICE_TEXT_MESSAGE_DEDUPE_MS);
+    this.voiceTextMessageIds.set(messageId, timer);
+    return false;
+  }
+
+  private getConnectedVoiceTextBridge(message: Message, addressed: boolean) {
+    if (!message.guildId) {
+      return null;
+    }
+    const connection = getVoiceConnection(message.guildId);
+    const voiceChannelId = connection?.joinConfig.channelId;
+    if (connection?.state.status !== VoiceConnectionStatus.Ready || !voiceChannelId) {
+      return null;
+    }
+    const bridge = this.voiceBridges.get(message.guildId);
+    if (!bridge) {
+      return null;
+    }
+    if (addressed || isVoiceTextChannelMessage(message, voiceChannelId)) {
+      return bridge;
+    }
+    return null;
   }
 
   private async isMessageChannelNsfw(message: Message) {
@@ -1634,6 +1689,12 @@ function hasBooleanNsfw(value: unknown): value is { nsfw: boolean } {
     && typeof (value as { nsfw?: unknown }).nsfw === 'boolean';
 }
 
+function isVoiceTextChannelMessage(message: Message, voiceChannelId: string) {
+  return message.channelId === voiceChannelId
+    || getThreadParentId(message.channel) === voiceChannelId
+    || getChannelParentId(message.channel) === voiceChannelId;
+}
+
 function getThreadParent(value: unknown) {
   if (!isThreadLikeChannel(value) || !value.isThread()) {
     return null;
@@ -1646,6 +1707,15 @@ function getThreadParentId(value: unknown) {
     return null;
   }
   return typeof value.parentId === 'string' ? value.parentId : null;
+}
+
+function getChannelParentId(value: unknown) {
+  if (typeof value !== 'object' || value === null || !('parentId' in value)) {
+    return null;
+  }
+  return typeof (value as { parentId?: unknown }).parentId === 'string'
+    ? (value as { parentId: string }).parentId
+    : null;
 }
 
 function isThreadLikeChannel(value: unknown): value is { isThread: () => boolean; parent?: unknown; parentId?: unknown } {

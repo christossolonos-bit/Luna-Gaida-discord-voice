@@ -90,6 +90,8 @@ Slash commands:
 
 Running slash commands requires Discord Administrator permission, explicit authorization through `/giada authorize`, or the built-in owner bypass.
 
+When Giada is connected and ready in a voice channel, she also watches that voice channel's built-in text chat. Messages there, and direct pings while she is connected to voice, are answered through the active voice connection instead of Discord text replies.
+
 Slash command delivery is supported in two modes:
 
 - Gateway mode: leave the Discord Developer Portal Interactions Endpoint URL empty and keep the backend bot process running.
