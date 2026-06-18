@@ -233,6 +233,9 @@ export class DiscordPlugin implements GiadaPlugin {
           error: error instanceof Error ? error.message : String(error)
         });
         if (message.guildId && message.author.id !== this.client?.user?.id) {
+          if (isDiscordSendFailure(error)) {
+            return;
+          }
           void this.reply(message, 'I saw your message, but my reply generator failed. Check the backend logs for the exact error.').catch((replyError) => {
             logger.warn('Failed to send Discord message handler fallback', {
               guildId: message.guildId,
@@ -497,7 +500,14 @@ export class DiscordPlugin implements GiadaPlugin {
     });
 
     if ('sendTyping' in message.channel && typeof message.channel.sendTyping === 'function') {
-      await message.channel.sendTyping();
+      await message.channel.sendTyping().catch((error) => {
+        logger.warn('Could not send Discord typing indicator', {
+          guildId: message.guildId,
+          channelId: message.channelId,
+          messageId: message.id,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
     }
     const context = await this.collectMessageContext(message);
     const channelNsfw = await this.isMessageChannelNsfw(message);
@@ -847,80 +857,11 @@ export class DiscordPlugin implements GiadaPlugin {
 
   private async registerCommands() {
     const client = this.client;
-    if (!client) {
-      return;
-    }
-
-    const configuredApplicationId = this.config.DISCORD_APPLICATION_ID?.trim();
-    const activeApplicationId = client.application?.id || client.user?.id;
-    if (configuredApplicationId && activeApplicationId && configuredApplicationId !== activeApplicationId) {
-      logger.error('Refusing to register slash commands to a different application than the logged-in bot.', {
-        configuredApplicationId,
-        activeApplicationId,
-        botUserId: client.user?.id
-      });
-      return;
-    }
-
-    const applicationId = activeApplicationId ?? configuredApplicationId;
-    const registrationToken = this.discordRegistrationToken();
-    if (!applicationId || !registrationToken) {
-      logger.error('Cannot register Discord commands: missing DISCORD_APPLICATION_ID or Discord authorization token');
-      return;
-    }
-
-    const rest = new REST({ version: '10' }).setToken(registrationToken);
-    const commands = [giadaCommand.toJSON()];
-    const guildIds = this.config.DISCORD_GUILD_ID
-      ? [this.config.DISCORD_GUILD_ID]
-      : [...client.guilds.cache.keys()];
-
-    for (const guildId of guildIds) {
-      try {
-        const registered = await rest.put(
-          Routes.applicationGuildCommands(applicationId, guildId),
-          { body: commands }
-        ) as DiscordRegisteredCommand[];
-        logger.info('Registered Discord slash commands with REST route', {
-          applicationId,
-          guildId,
-          commands: registered.map((command) => ({ id: command.id, name: command.name }))
-        });
-      } catch (error) {
-        logger.error('Failed to register Discord slash commands', {
-          applicationId,
-          guildId,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
-
-    if (this.config.DISCORD_REGISTER_GLOBAL_COMMANDS) {
-      try {
-        const registered = await rest.put(
-          Routes.applicationCommands(applicationId),
-          { body: commands }
-        ) as DiscordRegisteredCommand[];
-        logger.info('Registered global Discord slash commands with REST route', {
-          applicationId,
-          commands: registered.map((command) => ({ id: command.id, name: command.name }))
-        });
-      } catch (error) {
-        logger.error('Failed to register global Discord slash commands', error instanceof Error ? error.message : String(error));
-      }
-    }
-  }
-
-  private discordRegistrationToken() {
-    const botToken = this.config.DISCORD_BOT_TOKEN?.trim();
-    if (botToken) {
-      return botToken;
-    }
-    const bearerToken = this.config.DISCORD_BEARER_TOKEN?.trim();
-    if (bearerToken) {
-      return bearerToken;
-    }
-    return null;
+    await registerDiscordCommands(
+      this.config,
+      client?.application?.id || client?.user?.id || null,
+      client?.guilds.cache.map((guild) => guild.id) ?? []
+    );
   }
 
   private async handleVoiceStateUpdate(oldState: VoiceState, newState: VoiceState) {
@@ -1732,13 +1673,14 @@ export class DiscordPlugin implements GiadaPlugin {
       ...payload,
       failIfNotExists: false
     }).catch(async (error) => {
-      if (!isUnknownDiscordMessageReferenceError(error)) {
+      if (!isReplyFallbackError(error)) {
         throw error;
       }
-      logger.warn('Discord reply target disappeared; sending plain channel message instead', {
+      logger.warn('Discord reply target cannot be used; sending plain channel message instead', {
         guildId: message.guildId,
         channelId: message.channelId,
-        messageId: message.id
+        messageId: message.id,
+        error: error instanceof Error ? error.message : String(error)
       });
       if (!('send' in message.channel) || typeof message.channel.send !== 'function') {
         throw error;
@@ -1979,9 +1921,27 @@ function allowedMentionsForContent(content: string) {
   };
 }
 
+function isReplyFallbackError(error: unknown) {
+  return isUnknownDiscordMessageReferenceError(error) || isDiscordSystemMessageReplyError(error);
+}
+
 function isUnknownDiscordMessageReferenceError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes('MESSAGE_REFERENCE_UNKNOWN_MESSAGE') || message.includes('Unknown message');
+}
+
+function isDiscordSystemMessageReplyError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('REPLIES_CANNOT_REPLY_TO_SYSTEM_MESSAGE') || message.includes('Cannot reply to a system message');
+}
+
+function isDiscordSendFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('Missing Access')
+    || message.includes('Missing Permissions')
+    || message.includes('Cannot send messages')
+    || message.includes('REPLIES_CANNOT_REPLY_TO_SYSTEM_MESSAGE')
+    || message.includes('Cannot reply to a system message');
 }
 
 async function readRequestBody(req: IncomingMessage) {
@@ -1995,6 +1955,83 @@ async function readRequestBody(req: IncomingMessage) {
 function writeJson(res: ServerResponse, status: number, value: unknown) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(value));
+}
+
+export async function registerDiscordCommands(config: AppConfig, activeApplicationId: string | null = null, guildIds: string[] = []) {
+  const configuredApplicationId = config.DISCORD_APPLICATION_ID?.trim();
+  if (configuredApplicationId && activeApplicationId && configuredApplicationId !== activeApplicationId) {
+    logger.error('Refusing to register slash commands to a different application than the logged-in bot.', {
+      configuredApplicationId,
+      activeApplicationId
+    });
+    return { ok: false, error: 'application_id_mismatch' };
+  }
+
+  const applicationId = activeApplicationId ?? configuredApplicationId;
+  const registrationToken = discordRegistrationToken(config);
+  if (!applicationId || !registrationToken) {
+    logger.error('Cannot register Discord commands: missing DISCORD_APPLICATION_ID or Discord authorization token');
+    return { ok: false, error: 'missing_application_id_or_token' };
+  }
+
+  const rest = new REST({ version: '10' }).setToken(registrationToken);
+  const commands = [giadaCommand.toJSON()];
+  const targetGuildIds = config.DISCORD_GUILD_ID
+    ? [config.DISCORD_GUILD_ID]
+    : [...new Set(guildIds)];
+  const registeredGuilds: string[] = [];
+
+  for (const guildId of targetGuildIds) {
+    try {
+      const registered = await rest.put(
+        Routes.applicationGuildCommands(applicationId, guildId),
+        { body: commands }
+      ) as DiscordRegisteredCommand[];
+      registeredGuilds.push(guildId);
+      logger.info('Registered Discord slash commands with REST route', {
+        applicationId,
+        guildId,
+        commands: registered.map((command) => ({ id: command.id, name: command.name }))
+      });
+    } catch (error) {
+      logger.error('Failed to register Discord slash commands', {
+        applicationId,
+        guildId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  let registeredGlobal = false;
+  if (config.DISCORD_REGISTER_GLOBAL_COMMANDS) {
+    try {
+      const registered = await rest.put(
+        Routes.applicationCommands(applicationId),
+        { body: commands }
+      ) as DiscordRegisteredCommand[];
+      registeredGlobal = true;
+      logger.info('Registered global Discord slash commands with REST route', {
+        applicationId,
+        commands: registered.map((command) => ({ id: command.id, name: command.name }))
+      });
+    } catch (error) {
+      logger.error('Failed to register global Discord slash commands', error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  return { ok: true, applicationId, registeredGuilds, registeredGlobal };
+}
+
+function discordRegistrationToken(config: AppConfig) {
+  const botToken = config.DISCORD_BOT_TOKEN?.trim();
+  if (botToken) {
+    return botToken;
+  }
+  const bearerToken = config.DISCORD_BEARER_TOKEN?.trim();
+  if (bearerToken) {
+    return bearerToken;
+  }
+  return null;
 }
 
 export function isUsableDiscordToken(token: string | undefined) {

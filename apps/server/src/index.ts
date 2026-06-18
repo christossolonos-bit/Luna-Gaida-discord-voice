@@ -6,6 +6,7 @@ import { PersonalityService } from './personality/service.js';
 import { LiveSessionManager } from './live/liveSession.js';
 import { attachRealtimeServer } from './ws/realtimeServer.js';
 import { DiscordPlugin, isUsableDiscordToken } from './plugins/discord/discordPlugin.js';
+import { DiscordShardManagerPlugin } from './plugins/discord/discordShardManager.js';
 import { PluginManager } from './plugins/plugin.js';
 import { logger } from './logging/logger.js';
 
@@ -14,7 +15,9 @@ const app = Fastify({ logger: false });
 const memory = new MemoryRepository(config.databasePath);
 const personality = new PersonalityService(config.databasePath);
 const plugins = new PluginManager();
-const discord = new DiscordPlugin(config, memory, personality);
+const discord = config.DISCORD_SHARDING_ENABLED
+  ? new DiscordShardManagerPlugin(config)
+  : new DiscordPlugin(config, memory, personality);
 
 plugins.register(discord);
 
@@ -43,7 +46,15 @@ app.post('/memory', async (request) => {
 
 const server = createServer((req, res) => {
   if (isDiscordInteractionRequest(req)) {
-    void discord.handleHttpInteraction(req, res);
+    if (discord instanceof DiscordPlugin) {
+      void discord.handleHttpInteraction(req, res);
+      return;
+    }
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'discord_http_interactions_unavailable_with_process_sharding',
+      message: 'Disable the Discord Developer Portal Interactions Endpoint URL and use gateway slash commands when DISCORD_SHARDING_ENABLED=true.'
+    }));
     return;
   }
   void app.routing(req, res);

@@ -156,7 +156,6 @@ export class DiscordTextResponder {
     }];
     for (const image of input.images ?? []) {
       parts.push({ text: `Image attachment: ${image.label}` });
-      parts.push({ inlineData: { mimeType: image.mimeType, data: image.data } });
     }
     if (memoryContext) {
       parts.push({ text: `Current channel memory for this Discord text context:\n${memoryContext}` });
@@ -192,15 +191,22 @@ export class DiscordTextResponder {
         return await this.generateTextReplyOnce(systemInstruction, attempt > 0 ? withEmptyRetryInstruction(parts) : parts, input);
       } catch (error) {
         lastError = error;
-        if (!(error instanceof EmptyDiscordLiveTextResponseError)) {
+        if (!(error instanceof EmptyDiscordLiveTextResponseError) && !(error instanceof TransientDiscordLiveTextResponseError)) {
           break;
         }
+        logger.warn('Retrying Discord Live text response after transient failure', {
+          guildId: input.guildId,
+          channelId: input.channelId,
+          attempt,
+          error: error instanceof Error ? error.message : String(error)
+        });
       }
     }
-    if (lastError instanceof EmptyDiscordLiveTextResponseError) {
-      logger.warn('Discord Live text response stayed empty after retry; treating as no-reply tag', {
+    if (lastError instanceof EmptyDiscordLiveTextResponseError || lastError instanceof TransientDiscordLiveTextResponseError) {
+      logger.warn('Discord Live text response failed after retry; treating as no-reply tag', {
         guildId: input.guildId,
-        channelId: input.channelId
+        channelId: input.channelId,
+        error: lastError instanceof Error ? lastError.message : String(lastError)
       });
       return '[[GIADA_NO_REPLY]]';
     }
@@ -439,11 +445,12 @@ class DiscordLiveTextContext {
       return '';
     }
 
+    const timeoutMs = input.images?.length ? 45_000 : 25_000;
     const response = new Promise<string>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.rejectCurrent(new Error('Discord Live text response timed out'));
+        this.rejectCurrent(new TransientDiscordLiveTextResponseError('Discord Live text response timed out'));
         this.dispose();
-      }, 25_000);
+      }, timeoutMs);
 
       this.current = {
         input,
@@ -457,10 +464,41 @@ class DiscordLiveTextContext {
       };
     });
 
-    this.session.sendClientContent({
-      turns: [{ role: 'user', parts }],
-      turnComplete: true
+    const text = textFromParts(parts);
+    logger.info('Sending Discord Live realtime text turn', {
+      key: this.key,
+      guildId: input.guildId,
+      channelId: input.channelId,
+      imageCount: input.images?.length ?? 0,
+      imageMimeTypes: input.images?.map((image) => image.mimeType),
+      imageDataLengths: input.images?.map((image) => image.data.length),
+      textLength: text.length
     });
+
+    try {
+      if (input.images?.length) {
+        for (const image of input.images) {
+          this.session.sendRealtimeInput({
+            media: {
+              data: image.data,
+              mimeType: image.mimeType
+            }
+          });
+        }
+      }
+      if (text.trim()) {
+        this.session.sendRealtimeInput({ text });
+      }
+    } catch (error) {
+      logger.error('Failed to send Discord Live realtime text turn', {
+        key: this.key,
+        guildId: input.guildId,
+        channelId: input.channelId,
+        ...summarizeLiveError(error)
+      });
+      this.rejectCurrent(error);
+      this.dispose();
+    }
 
     return response;
   }
@@ -478,6 +516,7 @@ class DiscordLiveTextContext {
       outputAudioTranscription: {},
       systemInstruction: this.systemInstruction,
       temperature: 0.8,
+      maxOutputTokens: 4096,
       safetySettings: [
         { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.OFF },
         { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.OFF },
@@ -495,11 +534,23 @@ class DiscordLiveTextContext {
       callbacks: {
         onmessage: (message: LiveServerMessage) => this.handleMessage(message, handleToolCalls),
         onerror: (error) => {
+          logger.error('Discord Live text session error', {
+            key: this.key,
+            ...summarizeLiveError(error)
+          });
           this.rejectCurrent(error);
           this.dispose();
         },
         onclose: (event) => {
-          this.rejectCurrent(new Error(`Discord Live text session closed before completion: ${event.reason}`));
+          logger.warn('Discord Live text session closed', {
+            key: this.key,
+            ...summarizeLiveCloseEvent(event)
+          });
+          if (this.current?.outputText.trim()) {
+            this.resolveCurrent(this.current.outputText.trim());
+          } else {
+            this.rejectCurrent(new TransientDiscordLiveTextResponseError(`Discord Live text session closed before completion${event.reason ? `: ${event.reason}` : ''}`));
+          }
           this.dispose();
         }
       }
@@ -542,7 +593,7 @@ class DiscordLiveTextContext {
       });
     }
 
-    if (message.serverContent?.turnComplete) {
+    if (message.serverContent?.turnComplete || message.serverContent?.generationComplete) {
       if (current.outputText.trim()) {
         this.resolveCurrent(current.outputText.trim());
         return;
@@ -615,6 +666,15 @@ class DiscordLiveTextContext {
 
 class EmptyDiscordLiveTextResponseError extends Error {}
 
+class TransientDiscordLiveTextResponseError extends Error {}
+
+function textFromParts(parts: Part[]) {
+  return parts
+    .map((part) => typeof part.text === 'string' ? part.text : '')
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 function withEmptyRetryInstruction(parts: Part[]) {
   return [
     ...parts,
@@ -629,6 +689,51 @@ function textContextConfigSignature(systemInstruction: string, functionDeclarati
     systemInstruction,
     toolNames: functionDeclarations.map((declaration) => declaration.name)
   });
+}
+
+function summarizeLiveError(error: unknown) {
+  if (!error || typeof error !== 'object') {
+    return { error: String(error) };
+  }
+  const record = error as Record<string, unknown>;
+  return {
+    name: typeof record.name === 'string' ? record.name : undefined,
+    message: typeof record.message === 'string' ? record.message : String(error),
+    code: firstPresent(record.code, record.errorCode),
+    status: firstPresent(record.status, record.statusCode),
+    reason: firstPresent(record.reason),
+    details: summarizeLiveDetails(record.details)
+  };
+}
+
+function summarizeLiveCloseEvent(event: unknown) {
+  if (!event || typeof event !== 'object') {
+    return { closeEvent: String(event) };
+  }
+  const record = event as Record<string, unknown>;
+  return {
+    code: firstPresent(record.code),
+    reason: typeof record.reason === 'string' ? record.reason : undefined,
+    wasClean: typeof record.wasClean === 'boolean' ? record.wasClean : undefined
+  };
+}
+
+function firstPresent(...values: unknown[]) {
+  return values.find((value) => value !== undefined && value !== null);
+}
+
+function summarizeLiveDetails(details: unknown) {
+  if (typeof details === 'string') {
+    return details.slice(0, 500);
+  }
+  if (!details) {
+    return undefined;
+  }
+  try {
+    return JSON.stringify(details).slice(0, 500);
+  } catch {
+    return String(details).slice(0, 500);
+  }
 }
 
 function discordToolDeclarations(input: DiscordReplyInput) {
@@ -837,6 +942,9 @@ function extractLiveText(message: LiveServerMessage) {
   const transcript = message.serverContent?.outputTranscription?.text;
   if (transcript) {
     return transcript;
+  }
+  if (typeof message.text === 'string' && message.text.trim()) {
+    return message.text;
   }
   return (message.serverContent?.modelTurn?.parts ?? [])
     .filter((part) => !part.thought && typeof part.text === 'string')

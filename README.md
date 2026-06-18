@@ -143,6 +143,17 @@ Slash command delivery is supported in two modes:
 
 Command definitions use discord.js `SlashCommandBuilder`, and deployment uses discord.js `REST`/`Routes` on backend startup or through the local registration endpoint.
 
+Discord process sharding is opt-in. Enable it when the bot is large enough to need gateway sharding:
+
+```bash
+DISCORD_SHARDING_ENABLED=true
+# auto asks Discord for the recommended shard count.
+DISCORD_SHARD_COUNT=auto
+DISCORD_SHARD_RESPAWN=true
+```
+
+When sharding is enabled, the HTTP server runs as the parent process and spawns Discord gateway shard workers. Use gateway slash-command delivery in this mode: leave the Discord Developer Portal Interactions Endpoint URL empty. HTTP interaction endpoint mode is intentionally unavailable with process sharding because the parent process does not own a guild-cached Discord client.
+
 Local diagnostics:
 
 ```bash
