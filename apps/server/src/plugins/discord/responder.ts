@@ -156,6 +156,7 @@ export class DiscordTextResponder {
     }];
     for (const image of input.images ?? []) {
       parts.push({ text: `Image attachment: ${image.label}` });
+      parts.push({ inlineData: { mimeType: image.mimeType, data: image.data } });
     }
     if (memoryContext) {
       parts.push({ text: `Current channel memory for this Discord text context:\n${memoryContext}` });
@@ -445,12 +446,11 @@ class DiscordLiveTextContext {
       return '';
     }
 
-    const timeoutMs = input.images?.length ? 45_000 : 25_000;
     const response = new Promise<string>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.rejectCurrent(new TransientDiscordLiveTextResponseError('Discord Live text response timed out'));
+        this.rejectCurrent(new Error('Discord Live text response timed out'));
         this.dispose();
-      }, timeoutMs);
+      }, 25_000);
 
       this.current = {
         input,
@@ -464,41 +464,10 @@ class DiscordLiveTextContext {
       };
     });
 
-    const text = textFromParts(parts);
-    logger.info('Sending Discord Live realtime text turn', {
-      key: this.key,
-      guildId: input.guildId,
-      channelId: input.channelId,
-      imageCount: input.images?.length ?? 0,
-      imageMimeTypes: input.images?.map((image) => image.mimeType),
-      imageDataLengths: input.images?.map((image) => image.data.length),
-      textLength: text.length
+    this.session.sendClientContent({
+      turns: [{ role: 'user', parts }],
+      turnComplete: true
     });
-
-    try {
-      if (input.images?.length) {
-        for (const image of input.images) {
-          this.session.sendRealtimeInput({
-            media: {
-              data: image.data,
-              mimeType: image.mimeType
-            }
-          });
-        }
-      }
-      if (text.trim()) {
-        this.session.sendRealtimeInput({ text });
-      }
-    } catch (error) {
-      logger.error('Failed to send Discord Live realtime text turn', {
-        key: this.key,
-        guildId: input.guildId,
-        channelId: input.channelId,
-        ...summarizeLiveError(error)
-      });
-      this.rejectCurrent(error);
-      this.dispose();
-    }
 
     return response;
   }
@@ -611,11 +580,12 @@ class DiscordLiveTextContext {
             channelId: current.input.channelId,
             audioParts: current.audioParts,
             toolCallCount: current.toolCallCount,
-            mayStaySilent: Boolean(current.input.mayStaySilent)
+            mayStaySilent: Boolean(current.input.mayStaySilent),
+            text: current.outputText
           });
           this.rejectCurrent(error);
           this.dispose();
-        }, 1200);
+        }, 12000);
       }
     }
   }
@@ -942,9 +912,6 @@ function extractLiveText(message: LiveServerMessage) {
   const transcript = message.serverContent?.outputTranscription?.text;
   if (transcript) {
     return transcript;
-  }
-  if (typeof message.text === 'string' && message.text.trim()) {
-    return message.text;
   }
   return (message.serverContent?.modelTurn?.parts ?? [])
     .filter((part) => !part.thought && typeof part.text === 'string')

@@ -29,6 +29,7 @@ services:
       SEARXNG_BASE_URL: http://searxng:8080/
     volumes:
       - searxng_data:/etc/searxng
+      - searxng_cache:/var/cache/searxng
     networks:
       - default
 
@@ -39,3 +40,4 @@ networks:
 volumes:
   giada_data:
   searxng_data:
+  searxng_cache:
