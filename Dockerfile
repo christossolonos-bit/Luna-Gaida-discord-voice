@@ -23,7 +23,7 @@ ENV NODE_ENV=production
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates ffmpeg python3 python3-pip \
-  && python3 -m pip install --break-system-packages --no-cache-dir yt-dlp \
+  && python3 -m pip install --break-system-packages --no-cache-dir -U "yt-dlp[default]" \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/package.json /app/package-lock.json ./
