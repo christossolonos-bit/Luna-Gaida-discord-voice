@@ -16,11 +16,13 @@ import type { MemoryRepository } from '../memory/repository.js';
 import type { PersonalityService } from '../personality/service.js';
 import { createToolRegistry, isToolAvailableForSurface, type MusicController, type RegisteredTool, type ToolContext, type VoiceController } from '../tools/registry.js';
 import { logger } from '../logging/logger.js';
+import { appendTurnText, ConversationHistory } from './conversationHistory.js';
 
 export type LiveSurface = 'desktop' | 'discord' | 'browser';
 
 export type LiveClientEvent =
   | { type: 'status'; status: 'offline' | 'connecting' | 'connected' | 'error'; reason?: string }
+  | { type: 'response.empty'; reason: string }
   | { type: 'audio'; data: string; mimeType: 'audio/pcm;rate=24000' }
   | { type: 'transcript'; speaker: 'user' | 'assistant'; text: string; final?: boolean }
   | { type: 'avatar.expression'; payload: { expression: string; intensity: number } }
@@ -40,6 +42,10 @@ export class LiveSessionManager {
   private readonly tools: RegisteredTool[];
   private session: Session | null = null;
   private connecting: Promise<void> | null = null;
+  private textSession: Session | null = null;
+  private textConnecting: Promise<void> | null = null;
+  private textSessionSurface: LiveSurface | null = null;
+  private textQueue: Promise<unknown> = Promise.resolve();
   private emit: ((event: LiveClientEvent) => void) | null = null;
   private passive = false;
   private desiredSurface: LiveSurface | null = null;
@@ -48,6 +54,14 @@ export class LiveSessionManager {
   private sessionId = 0;
   private currentStatus: 'offline' | 'connecting' | 'connected' | 'error' = 'offline';
   private currentStatusReason: string | undefined;
+  private readonly conversationHistory = new ConversationHistory(20);
+  private assistantTurnText = '';
+  private historyLoadedInSession = false;
+  private textTurnPending = false;
+  private currentTurnHasOutput = false;
+  private textTurnServerComplete = false;
+  private textTurnTimer: ReturnType<typeof setTimeout> | null = null;
+  private textTurnResolve: (() => void) | null = null;
 
   constructor(
     private readonly config: AppConfig,
@@ -115,6 +129,14 @@ export class LiveSessionManager {
       this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
       return;
     }
+    if (input.type === 'text' && input.text?.trim()) {
+      const text = input.text.trim();
+      const run = this.textQueue
+        .catch(() => undefined)
+        .then(() => this.handleTextInput(text, surface));
+      this.textQueue = run.catch(() => undefined);
+      return run;
+    }
     await this.connect(surface);
     if (!this.session) {
       return;
@@ -122,11 +144,6 @@ export class LiveSessionManager {
 
     if (input.type === 'turnComplete') {
       this.session.sendClientContent({ turnComplete: true });
-    } else if (input.type === 'text' && input.text?.trim()) {
-      this.session.sendClientContent({
-        turns: [{ role: 'user', parts: [{ text: this.decorateUserText(input.text.trim()) }] }],
-        turnComplete: true
-      });
     } else if (input.type === 'audio' && input.data) {
       this.session.sendRealtimeInput({ audio: { data: input.data, mimeType: input.mimeType ?? 'audio/pcm;rate=16000' } });
     } else if (input.type === 'audioStreamEnd') {
@@ -150,29 +167,61 @@ export class LiveSessionManager {
     }
     this.session?.close();
     this.session = null;
+    this.textSession?.close();
+    this.textSession = null;
+    this.textConnecting = null;
+    this.textSessionSurface = null;
+    this.assistantTurnText = '';
+    this.historyLoadedInSession = false;
+    this.textTurnPending = false;
+    this.currentTurnHasOutput = false;
+    this.finishTextTurn();
     this.emitStatus('offline');
+  }
+
+  private async handleTextInput(text: string, surface: LiveSurface) {
+    await this.connectTextSession(surface);
+    if (!this.textSession) {
+      throw new Error('Gemini Live text session is unavailable');
+    }
+
+    const previousTurns = shouldTrackConversation(surface) && !this.historyLoadedInSession
+      ? this.conversationHistory.toPromptText()
+      : '';
+    if (shouldTrackConversation(surface)) {
+      this.conversationHistory.add('user', text);
+    }
+    const parts = previousTurns
+      ? [
+        { text: `Previous conversation (context only):\n${previousTurns}` },
+        { text: `Current user message:\n${this.decorateUserText(text)}` }
+      ]
+      : [{ text: this.decorateUserText(text) }];
+
+    this.textTurnPending = true;
+    this.currentTurnHasOutput = false;
+    this.textTurnServerComplete = false;
+    const completion = new Promise<void>((resolve) => {
+      this.textTurnResolve = resolve;
+      this.textTurnTimer = setTimeout(() => {
+        this.emit?.({ type: 'response.empty', reason: 'Gemini Live text response timed out' });
+        this.finishTextTurn();
+        this.textSession?.close();
+        this.textSession = null;
+      }, 25_000);
+    });
+    this.textSession.sendClientContent({
+      turns: [{ role: 'user', parts }],
+      turnComplete: true
+    });
+    this.historyLoadedInSession = true;
+    await completion;
   }
 
   private async open(surface: LiveSurface) {
     const openedSessionId = this.sessionId + 1;
     this.sessionId = openedSessionId;
-    const memoryContext = this.memory
-      .listForContext(surface, 20, this.toolContextProviders.memoryTags ?? [])
-      .map((record) => `- [${record.privacy}/${record.source}] ${record.summary ?? record.content}`)
-      .join('\n');
-    const systemInstruction = [
-      this.personality.buildInstruction(memoryContext, surface),
-      'When you need current web information, links, documentation, or news, use the searchWeb tool. Do not rely on provider Google Search grounding.',
-      surface === 'discord'
-        ? [
-          `You are speaking in a Discord voice channel. Always reply in ${this.config.GIADA_DEFAULT_LANGUAGE} unless the user explicitly asks for or speaks another language.`,
-          `If the audio transcription looks like the wrong language, assume the user is still speaking ${this.config.GIADA_DEFAULT_LANGUAGE} and answer in ${this.config.GIADA_DEFAULT_LANGUAGE}.`,
-          'When users ask you to play, search for, pause, resume, stop, seek, or change music volume in voice, use the Discord music tools instead of describing how to do it.',
-          'When users ask you to leave or disconnect from voice, use the leaveVoiceChannel tool.',
-          'Be concise and respond after each completed user voice turn.'
-        ].join(' ')
-        : null
-    ].filter(Boolean).join('\n');
+    const systemInstruction = this.buildSystemInstruction(surface);
     const config = this.buildConfig(systemInstruction, surface);
     let openedSession: Session | null = null;
     let sessionEndedDuringOpen = false;
@@ -192,7 +241,7 @@ export class LiveSessionManager {
           if (!this.isCurrentSession(openedSessionId, surface)) {
             return;
           }
-          void this.handleMessage(message, surface);
+          void this.handleMessage(message, surface, openedSession ?? this.session, false);
         },
         onerror: (error) => {
           if (!this.isCurrentSession(openedSessionId, surface)) {
@@ -233,6 +282,58 @@ export class LiveSessionManager {
       return;
     }
     this.session = session;
+    this.historyLoadedInSession = false;
+  }
+
+  private async connectTextSession(surface: LiveSurface) {
+    if (!this.ai) {
+      throw new Error('GEMINI_API_KEY is not configured');
+    }
+    if (this.textSession && this.textSessionSurface === surface) {
+      return;
+    }
+    if (this.textConnecting) {
+      await this.textConnecting;
+      if (this.textSessionSurface === surface) {
+        return;
+      }
+    }
+
+    this.textSession?.close();
+    this.textSession = null;
+    this.textSessionSurface = surface;
+    let openedSession: Session | null = null;
+    this.textConnecting = this.ai.live.connect({
+      model: this.config.GEMINI_MODEL,
+      config: this.buildTextConfig(this.buildSystemInstruction(surface), surface),
+      callbacks: {
+        onmessage: (message: LiveServerMessage) => {
+          void this.handleMessage(message, surface, openedSession ?? this.textSession, true);
+        },
+        onerror: (error) => {
+          logger.error('Gemini Live text session error', { surface, error: error.message });
+          if (!openedSession || this.textSession === openedSession) {
+            this.textSession = null;
+          }
+          this.finishTextTurn();
+          this.emitStatus('error', error.message);
+        },
+        onclose: (event) => {
+          logger.warn('Gemini Live text session closed', { surface, reason: event.reason || null });
+          if (!openedSession || this.textSession === openedSession) {
+            this.textSession = null;
+          }
+          this.finishTextTurn();
+        }
+      }
+    }).then((session) => {
+      openedSession = session;
+      this.textSession = session;
+      this.historyLoadedInSession = false;
+    }).finally(() => {
+      this.textConnecting = null;
+    });
+    await this.textConnecting;
   }
 
   private scheduleReconnect(surface: LiveSurface) {
@@ -273,12 +374,49 @@ export class LiveSessionManager {
     return `Passive listening mode is enabled. Decide whether this merits a spoken response. If it does not, stay silent.\n\nUser/input: ${text}`;
   }
 
+  private buildSystemInstruction(surface: LiveSurface) {
+    const memoryContext = this.memory
+      .listForContext(surface, 20, this.toolContextProviders.memoryTags ?? [])
+      .map((record) => `- [${record.privacy}/${record.source}] ${record.summary ?? record.content}`)
+      .join('\n');
+    return [
+      this.personality.buildInstruction(memoryContext, surface),
+      'When you need current web information, links, documentation, or news, use the searchWeb tool. Do not rely on provider Google Search grounding.',
+      surface === 'discord'
+        ? [
+          `You are speaking in a Discord voice channel. Always reply in ${this.config.GIADA_DEFAULT_LANGUAGE} unless the user explicitly asks for or speaks another language.`,
+          `If the audio transcription looks like the wrong language, assume the user is still speaking ${this.config.GIADA_DEFAULT_LANGUAGE} and answer in ${this.config.GIADA_DEFAULT_LANGUAGE}.`,
+          'When users ask you to play, search for, pause, resume, stop, seek, or change music volume in voice, use the Discord music tools instead of describing how to do it.',
+          'When users ask you to leave or disconnect from voice, use the leaveVoiceChannel tool.',
+          'Be concise and respond after each completed user voice turn.'
+        ].join(' ')
+        : null
+    ].filter(Boolean).join('\n');
+  }
+
+  private buildTextConfig(systemInstruction: string, surface: LiveSurface): LiveConnectConfig {
+    return {
+      responseModalities: [Modality.AUDIO],
+      outputAudioTranscription: {},
+      systemInstruction,
+      temperature: 0.8,
+      maxOutputTokens: 4096,
+      safetySettings: this.buildSafetySettings(),
+      tools: [{
+        functionDeclarations: this.tools
+          .filter((tool) => isToolAvailableForSurface(tool, surface))
+          .map((tool) => normalizeDeclaration(tool.declaration))
+      }]
+    } as LiveConnectConfig;
+  }
+
   private buildConfig(systemInstruction: string, surface: LiveSurface): LiveConnectConfig {
     return {
       responseModalities: [Modality.AUDIO],
       systemInstruction,
       enableAffectiveDialog: true,
-      proactivity: surface === 'discord' ? { proactiveAudio: false } : { proactiveAudio: true },
+      //proactivity: surface === 'discord' ? { proactiveAudio: false } : { proactiveAudio: true },
+      proactivity: { proactiveAudio: true },
       realtimeInputConfig: surface === 'discord'
         ? {
           automaticActivityDetection: { disabled: true },
@@ -290,14 +428,7 @@ export class LiveSessionManager {
       speechConfig: {
         languageCode: this.config.GIADA_DEFAULT_LANGUAGE
       },
-      safetySettings: [
-        { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.OFF },
-        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.OFF },
-        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.OFF },
-        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.OFF },
-        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.OFF },
-        { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.OFF }
-      ],
+      safetySettings: this.buildSafetySettings(),
       tools: [
         {
               functionDeclarations: this.tools
@@ -308,7 +439,18 @@ export class LiveSessionManager {
     } as LiveConnectConfig;
   }
 
-  private async handleMessage(message: LiveServerMessage, surface: LiveSurface) {
+  private buildSafetySettings() {
+    return [
+        { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.OFF },
+        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.OFF },
+        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.OFF },
+        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.OFF },
+        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.OFF },
+        { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.OFF }
+      ];
+  }
+
+  private async handleMessage(message: LiveServerMessage, surface: LiveSurface, responseSession: Session | null, textResponse: boolean) {
     if (message.serverContent?.interrupted) {
       this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
       return;
@@ -317,7 +459,20 @@ export class LiveSessionManager {
     const textParts = extractTextParts(message);
     const outputText = (message.serverContent?.outputTranscription?.text ?? textParts).trim();
     if (outputText) {
+      if (textResponse) {
+        this.currentTurnHasOutput = true;
+      }
+      if (shouldTrackConversation(surface)) {
+        this.assistantTurnText = appendTurnText(this.assistantTurnText, outputText);
+      }
       this.emit?.({ type: 'transcript', speaker: 'assistant', text: outputText, final: Boolean(message.serverContent?.turnComplete) });
+      if (textResponse && this.textTurnServerComplete) {
+        if (shouldTrackConversation(surface) && this.assistantTurnText) {
+          this.conversationHistory.add('model', this.assistantTurnText);
+          this.assistantTurnText = '';
+        }
+        this.finishTextTurn();
+      }
     }
 
     const inputText = message.serverContent?.inputTranscription?.text?.trim();
@@ -327,6 +482,12 @@ export class LiveSessionManager {
 
     const audioParts = extractAudioParts(message);
     for (const audio of audioParts) {
+      if (textResponse) {
+        this.currentTurnHasOutput = true;
+        if (this.textTurnServerComplete) {
+          this.finishTextTurn();
+        }
+      }
       this.emit?.({ type: 'avatar.state', payload: { state: 'speaking' } });
       this.emit?.({ type: 'audio', data: audio.data, mimeType: audio.mimeType });
     }
@@ -391,13 +552,53 @@ export class LiveSessionManager {
           });
         }
       }
-      this.session?.sendToolResponse({ functionResponses: functionResponses as never });
+      responseSession?.sendToolResponse({ functionResponses: functionResponses as never });
     }
 
     if (message.serverContent?.turnComplete) {
+      if (shouldTrackConversation(surface) && this.assistantTurnText) {
+        this.conversationHistory.add('model', this.assistantTurnText);
+        this.assistantTurnText = '';
+      }
+      if (textResponse) {
+        this.textTurnServerComplete = true;
+        if (this.currentTurnHasOutput) {
+          this.finishTextTurn();
+        } else {
+          if (this.textTurnTimer) {
+            clearTimeout(this.textTurnTimer);
+          }
+          this.textTurnTimer = setTimeout(() => {
+            this.emit?.({
+              type: 'response.empty',
+              reason: 'Gemini completed the text turn without transcript or audio'
+            });
+            this.finishTextTurn();
+            this.textSession?.close();
+            this.textSession = null;
+          }, 12_000);
+        }
+      }
       this.emit?.({ type: 'avatar.state', payload: { state: 'idle' } });
     }
   }
+
+  private finishTextTurn() {
+    if (this.textTurnTimer) {
+      clearTimeout(this.textTurnTimer);
+      this.textTurnTimer = null;
+    }
+    const resolve = this.textTurnResolve;
+    this.textTurnResolve = null;
+    this.textTurnPending = false;
+    this.currentTurnHasOutput = false;
+    this.textTurnServerComplete = false;
+    resolve?.();
+  }
+}
+
+function shouldTrackConversation(surface: LiveSurface) {
+  return surface === 'desktop' || surface === 'browser';
 }
 
 function normalizeDeclaration(declaration: Record<string, unknown>) {

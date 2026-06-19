@@ -8,7 +8,7 @@ const realtimeSurfaceSchema = z.enum(['app', 'browser']).optional();
 const clientEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('connect'), surface: realtimeSurfaceSchema }),
   z.object({ type: z.literal('disconnect') }),
-  z.object({ type: z.literal('text'), text: z.string().max(8000) }),
+  z.object({ type: z.literal('text'), text: z.string().max(8000), requestId: z.string().uuid().optional() }),
   z.object({ type: z.literal('audio'), data: z.string(), mimeType: z.string().optional() }),
   z.object({ type: z.literal('video'), data: z.string(), mimeType: z.string().optional() }),
   z.object({ type: z.literal('mode'), passive: z.boolean().optional() }),
@@ -75,6 +75,13 @@ export function attachRealtimeServer(server: Server, createLive: (context: Realt
         } else if (parsed.type === 'disconnect') {
           getLive(context).close();
         } else {
+          if (parsed.type === 'text' && parsed.requestId && socket.readyState === socket.OPEN) {
+            socket.send(JSON.stringify({
+              type: 'input.ack',
+              requestId: parsed.requestId,
+              inputType: 'text'
+            }));
+          }
           void getLive(context).handleInput(parsed, toLiveSurface(context)).catch((error) => {
             logger.warn('Realtime input handling failed', {
               context,

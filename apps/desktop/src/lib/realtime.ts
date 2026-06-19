@@ -11,6 +11,8 @@ export interface TranscriptLine {
 
 export type RealtimeEvent =
   | { type: 'status'; status: string; reason?: string }
+  | { type: 'input.ack'; requestId: string; inputType: 'text' }
+  | { type: 'response.empty'; reason: string }
   | { type: 'audio'; data: string; mimeType: string }
   | { type: 'transcript'; speaker: 'user' | 'assistant'; text: string; final?: boolean }
   | { type: 'avatar.expression'; payload: { expression: string; intensity: number } }
@@ -127,7 +129,7 @@ export class RealtimeClient extends EventTarget {
     this.dispatchEvent(new CustomEvent<RealtimeEvent>('event', {
       detail: { type: 'transcript', speaker: 'user', text: trimmed, final: true }
     }));
-    const payload = { type: 'text', text: trimmed };
+    const payload = { type: 'text', text: trimmed, requestId: crypto.randomUUID() };
     void this.connect()
       .then(() => this.send(payload))
       .catch((error) => {

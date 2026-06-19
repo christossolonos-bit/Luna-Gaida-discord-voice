@@ -22,8 +22,16 @@ function App() {
       const detail = (event as CustomEvent<RealtimeEvent>).detail;
       if (detail.type === 'status') {
         setStatus(detail.reason ? `${detail.status}: ${detail.reason}` : detail.status);
+      } else if (detail.type === 'input.ack') {
+        setStatus('connected · message accepted');
+        setState('thinking');
+      } else if (detail.type === 'response.empty') {
+        setStatus(`error: ${detail.reason}`);
       } else if (detail.type === 'avatar.state') {
         setState(detail.payload.state);
+        if (detail.payload.state === 'speaking') {
+          setStatus('connected');
+        }
       } else if (detail.type === 'avatar.expression') {
         setExpression(detail.payload.expression);
       } else if (detail.type === 'avatar.model.change') {
