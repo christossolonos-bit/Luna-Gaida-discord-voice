@@ -465,12 +465,6 @@ export class DiscordPlugin implements GiadaPlugin {
       const safeInput = assertDiscordSafe(message.content);
       this.storeMessageAuthorIdentity(message);
       if (safeInput.text.trim()) {
-        this.memory.write({
-          content: `Discord voice text ${message.guildId}/${message.channelId} ${message.member?.displayName ?? message.author.username}: ${safeInput.text}`,
-          source: 'discord',
-          privacy: 'public',
-          tags: ['discord', 'voice-text', message.guildId, message.channelId]
-        });
         logger.info('Discord text message forwarded to active voice bridge instead of text reply', {
           guildId: message.guildId,
           channelId: message.channelId,
@@ -494,13 +488,6 @@ export class DiscordPlugin implements GiadaPlugin {
       return;
     }
     this.storeMessageAuthorIdentity(message);
-
-    this.memory.write({
-      content: `Discord ${message.guildId}/${message.channelId} ${message.member?.displayName ?? message.author.username}: ${safeInput.text}`,
-      source: 'discord',
-      privacy: 'public',
-      tags: ['discord', message.guildId, message.channelId]
-    });
 
     if ('sendTyping' in message.channel && typeof message.channel.sendTyping === 'function') {
       await message.channel.sendTyping().catch((error) => {
@@ -547,13 +534,6 @@ export class DiscordPlugin implements GiadaPlugin {
       return;
     }
     await this.reply(message, response);
-
-    this.memory.write({
-      content: `Discord ${message.guildId}/${message.channelId} ${this.personality.get().name}: ${response}`,
-      source: 'discord',
-      privacy: 'public',
-      tags: ['discord', message.guildId, message.channelId, 'assistant']
-    });
   }
 
   private hasSeenVoiceTextMessage(messageId: string) {
@@ -1632,7 +1612,8 @@ export class DiscordPlugin implements GiadaPlugin {
     return {
       label,
       mimeType,
-      data: bytes.toString('base64')
+      data: bytes.toString('base64'),
+      sourceUrl: attachment.url
     };
   }
 
