@@ -34,9 +34,9 @@ describe('personality boundaries', () => {
     const dir = mkdtempSync(join(tmpdir(), 'giada-personality-'));
     try {
       const personality = new PersonalityService(join(dir, 'giada.sqlite'));
-      const webInstruction = personality.buildInstruction('', 'browser');
-      const discordSafeInstruction = personality.buildInstruction('', 'discord', { discordNsfwAllowed: false });
-      const discordNsfwInstruction = personality.buildInstruction('', 'discord', { discordNsfwAllowed: true });
+      const webInstruction = personality.buildInstruction('browser');
+      const discordSafeInstruction = personality.buildInstruction('discord', { discordNsfwAllowed: false });
+      const discordNsfwInstruction = personality.buildInstruction('discord', { discordNsfwAllowed: true });
 
       expect(webInstruction).toContain('Web/browser surface: NSFW adult content is allowed');
       expect(discordSafeInstruction).toContain('this channel is not marked age-restricted/NSFW');

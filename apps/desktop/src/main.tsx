@@ -27,6 +27,11 @@ function App() {
         setState('thinking');
       } else if (detail.type === 'response.empty') {
         setStatus(`error: ${detail.reason}`);
+      } else if (detail.type === 'screen.status') {
+        setScreen(detail.status === 'sharing');
+        if (detail.status === 'error') {
+          setStatus(`screen error: ${detail.reason ?? 'unknown error'}`);
+        }
       } else if (detail.type === 'avatar.state') {
         setState(detail.payload.state);
         if (detail.payload.state === 'speaking') {

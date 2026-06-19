@@ -153,8 +153,19 @@ export function createToolRegistry(options: ToolRegistryOptions = {}): Registere
       },
       async run(args, context) {
         const query = z.object({ query: z.string().min(1).max(500) }).parse(args).query;
-        const records = context.memory.search(query, { allowPrivate: context.surface === 'desktop' });
-        return { memories: records.map(({ id, content, tags, source, privacy }) => ({ id, content, tags, source, privacy })) };
+        const records = context.memory.search(query, {
+          allowPrivate: context.surface !== 'discord',
+          limit: 8
+        });
+        return {
+          memories: records.map(({ id, content, summary, tags, source, privacy }) => ({
+            id,
+            content: (summary ?? content).slice(0, 1500),
+            tags,
+            source,
+            privacy
+          }))
+        };
       }
     },
     {

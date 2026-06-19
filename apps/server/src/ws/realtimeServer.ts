@@ -11,6 +11,8 @@ const clientEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text'), text: z.string().max(8000), requestId: z.string().uuid().optional() }),
   z.object({ type: z.literal('audio'), data: z.string(), mimeType: z.string().optional() }),
   z.object({ type: z.literal('video'), data: z.string(), mimeType: z.string().optional() }),
+  z.object({ type: z.literal('screen.start') }),
+  z.object({ type: z.literal('screen.stop') }),
   z.object({ type: z.literal('mode'), passive: z.boolean().optional() }),
   z.object({ type: z.literal('interrupt') })
 ]);

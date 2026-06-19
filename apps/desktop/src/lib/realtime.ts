@@ -13,6 +13,7 @@ export type RealtimeEvent =
   | { type: 'status'; status: string; reason?: string }
   | { type: 'input.ack'; requestId: string; inputType: 'text' }
   | { type: 'response.empty'; reason: string }
+  | { type: 'screen.status'; status: 'sharing' | 'stopped' | 'error'; reason?: string }
   | { type: 'audio'; data: string; mimeType: string }
   | { type: 'transcript'; speaker: 'user' | 'assistant'; text: string; final?: boolean }
   | { type: 'avatar.expression'; payload: { expression: string; intensity: number } }
@@ -30,11 +31,14 @@ export class RealtimeClient extends EventTarget {
   private micProcessor: ScriptProcessorNode | null = null;
   private screenStream: MediaStream | null = null;
   private screenTimer: number | null = null;
+  private screenSharing = false;
   private readonly audioEnabled: boolean;
+  private readonly surface: 'app' | 'browser';
 
-  constructor(options: { audioEnabled?: boolean } = {}) {
+  constructor(options: { audioEnabled?: boolean; surface?: 'app' | 'browser' } = {}) {
     super();
     this.audioEnabled = options.audioEnabled ?? true;
+    this.surface = options.surface ?? ('__TAURI_INTERNALS__' in window ? 'app' : 'browser');
   }
 
   connect(): Promise<void> {
@@ -50,7 +54,7 @@ export class RealtimeClient extends EventTarget {
       this.reconnectTimer = null;
     }
     this.dispatchEvent(new CustomEvent<RealtimeEvent>('event', { detail: { type: 'status', status: 'connecting' } }));
-    const socket = new WebSocket('ws://127.0.0.1:8787/realtime');
+    const socket = new WebSocket(realtimeWebSocketUrl());
     this.socket = socket;
     this.connecting = new Promise<void>((resolve, reject) => {
       const cleanup = () => {
@@ -61,7 +65,10 @@ export class RealtimeClient extends EventTarget {
       const handleOpen = () => {
         cleanup();
         this.connecting = null;
-        this.send({ type: 'connect', surface: 'app' });
+        this.send({ type: 'connect', surface: this.surface });
+        if (this.screenSharing) {
+          this.send({ type: 'screen.start' });
+        }
         resolve();
       };
       const handleError = () => {
@@ -183,51 +190,75 @@ export class RealtimeClient extends EventTarget {
   }
 
   async startScreenShare(options: { systemAudio: boolean; fps: number }) {
-    await this.connect();
-    this.screenStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: options.fps, max: 5 }, width: { max: 1920 } },
-      audio: options.systemAudio
-    });
-    const video = document.createElement('video');
-    video.muted = true;
-    video.playsInline = true;
-    video.srcObject = this.screenStream;
-    await new Promise<void>((resolve) => {
-      if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-        resolve();
-        return;
+    try {
+      await this.connect();
+      if (!navigator.mediaDevices?.getDisplayMedia) {
+        throw new Error(window.isSecureContext
+          ? 'Screen capture is not supported by this browser'
+          : 'Screen capture requires HTTPS or localhost');
       }
-      video.addEventListener('loadedmetadata', () => resolve(), { once: true });
-    });
-    await video.play();
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    const capture = () => {
-      if (!context || !video.videoWidth || !video.videoHeight) {
-        return;
-      }
-      const width = Math.min(video.videoWidth, 1280);
-      const height = Math.round(width * (video.videoHeight / video.videoWidth));
-      canvas.width = width;
-      canvas.height = height;
-      context.drawImage(video, 0, 0, width, height);
-      const data = canvas.toDataURL('image/jpeg', 0.72).split(',')[1];
-      if (data) {
-        this.send({ type: 'video', data, mimeType: 'image/jpeg' });
-      }
-    };
-    capture();
-    this.screenTimer = window.setInterval(capture, 1000 / Math.max(1, Math.min(options.fps, 5)));
-    this.screenStream.getVideoTracks()[0]?.addEventListener('ended', () => this.stopScreenShare());
+      this.screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: options.fps, max: 5 }, width: { max: 1920 } },
+        audio: options.systemAudio
+      });
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.srcObject = this.screenStream;
+      await new Promise<void>((resolve) => {
+        if (video.readyState >= HTMLMediaElement.HAVE_METADATA) return resolve();
+        video.addEventListener('loadedmetadata', () => resolve(), { once: true });
+      });
+      await video.play();
+      await waitForVideoFrame(video);
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('Could not create the screen capture canvas');
+
+      this.screenSharing = true;
+      this.send({ type: 'screen.start' });
+      const capture = () => {
+        if (!video.videoWidth || !video.videoHeight) return;
+        const width = Math.min(video.videoWidth, 1280);
+        const height = Math.round(width * (video.videoHeight / video.videoWidth));
+        canvas.width = width;
+        canvas.height = height;
+        context.drawImage(video, 0, 0, width, height);
+        const data = canvas.toDataURL('image/jpeg', 0.72).split(',')[1];
+        if (data) this.send({ type: 'video', data, mimeType: 'image/jpeg' });
+      };
+      capture();
+      this.screenTimer = window.setInterval(capture, 1000 / Math.max(1, Math.min(options.fps, 5)));
+      this.screenStream.getVideoTracks()[0]?.addEventListener('ended', () => this.stopScreenShare());
+      this.dispatchEvent(new CustomEvent<RealtimeEvent>('event', {
+        detail: { type: 'screen.status', status: 'sharing' }
+      }));
+    } catch (error) {
+      this.stopScreenShare(false);
+      const reason = error instanceof Error ? error.message : String(error);
+      this.dispatchEvent(new CustomEvent<RealtimeEvent>('event', {
+        detail: { type: 'screen.status', status: 'error', reason }
+      }));
+      throw error;
+    }
   }
 
-  stopScreenShare() {
+  stopScreenShare(notify = true) {
     if (this.screenTimer) {
       window.clearInterval(this.screenTimer);
     }
     this.screenStream?.getTracks().forEach((track) => track.stop());
+    if (this.screenSharing) {
+      this.send({ type: 'screen.stop' });
+    }
     this.screenTimer = null;
     this.screenStream = null;
+    this.screenSharing = false;
+    if (notify) {
+      this.dispatchEvent(new CustomEvent<RealtimeEvent>('event', {
+        detail: { type: 'screen.status', status: 'stopped' }
+      }));
+    }
   }
 
   private send(payload: unknown) {
@@ -245,4 +276,22 @@ export class RealtimeClient extends EventTarget {
       void this.connect().catch(() => undefined);
     }, 1500);
   }
+}
+
+function realtimeWebSocketUrl() {
+  const configured = import.meta.env.VITE_REALTIME_URL?.trim();
+  if (configured) return configured;
+  if ('__TAURI_INTERNALS__' in window) return 'ws://127.0.0.1:8787/realtime';
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.hostname}:8787/realtime`;
+}
+
+function waitForVideoFrame(video: HTMLVideoElement) {
+  return new Promise<void>((resolve) => {
+    if ('requestVideoFrameCallback' in video) {
+      video.requestVideoFrameCallback(() => resolve());
+      return;
+    }
+    window.setTimeout(resolve, 100);
+  });
 }
