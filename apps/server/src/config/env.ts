@@ -28,6 +28,7 @@ const envSchema = z.object({
   GIADA_DATABASE_URL: z.string().default('file:./data/giada.sqlite'),
   GIADA_DEFAULT_LANGUAGE: z.string().default('it-IT'),
   GIADA_ALLOWED_ORIGINS: z.string().default('tauri://localhost,http://localhost:1420'),
+  GIADA_MEMORY_TOOLS_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   DISCORD_BOT_TOKEN: z.string().optional(),
   DISCORD_BEARER_TOKEN: z.string().optional(),
   DISCORD_APPLICATION_ID: z.string().optional(),

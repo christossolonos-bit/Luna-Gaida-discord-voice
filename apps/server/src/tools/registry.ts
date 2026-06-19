@@ -34,7 +34,10 @@ export interface VoiceController {
 
 export interface ToolRegistryOptions {
   searxngUrl?: string;
+  memoryToolsEnabled?: boolean;
 }
+
+const memoryToolNames = new Set(['writeMemory', 'retrieveMemory']);
 
 const discordDisabledToolNames = new Set([
   'changeExpression',
@@ -92,7 +95,7 @@ const searchWebSchema = z.object({
 const availableModels = ['AI_Maid', 'AI_Casual', 'AI_Future', 'AI_Military', 'AI_Party', 'AI_Nude'];
 
 export function createToolRegistry(options: ToolRegistryOptions = {}): RegisteredTool[] {
-  return [
+  const tools: RegisteredTool[] = [
     {
       declaration: {
         name: 'searchWeb',
@@ -436,6 +439,7 @@ export function createToolRegistry(options: ToolRegistryOptions = {}): Registere
       }
     }
   ];
+  return tools.filter((tool) => options.memoryToolsEnabled || !memoryToolNames.has(String(tool.declaration.name)));
 }
 
 async function searchSearxng(searxngUrl: string | undefined, query: string, limit: number) {

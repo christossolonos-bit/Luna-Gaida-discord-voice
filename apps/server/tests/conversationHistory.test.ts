@@ -24,6 +24,10 @@ describe('conversation history', () => {
     history.add('model', 'Hi');
 
     expect(history.toPromptText()).toBe('User: Hello\nAssistant: Hi');
+    expect(history.toPromptParts()).toEqual([
+      { text: 'Previous user message: Hello' },
+      { text: 'Previous assistant message: Hi' }
+    ]);
   });
 
   it('combines incremental and cumulative assistant transcripts', () => {

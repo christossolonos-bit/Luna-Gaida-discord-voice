@@ -1473,21 +1473,17 @@ export class DiscordPlugin implements GiadaPlugin {
     const images: DiscordImageAttachment[] = [];
     const recentMessagesPromise = this.fetchRecentMessages(message);
     const replyTo = await this.fetchReplyTarget(message, images);
-    const currentAttachments = await this.collectAttachmentSummaries(message, 'current message', images);
+    await this.collectAttachmentSummaries(message, 'current message', images);
     const recentMessages = await recentMessagesPromise;
-    const currentMessage = this.formatContextMessage(message, currentAttachments);
     return {
       replyTo,
-      recentMessages: [
-        ...recentMessages.filter((candidate) => candidate.timestamp !== currentMessage.timestamp),
-        currentMessage
-      ].slice(-21),
+      recentMessages: recentMessages.slice(-10),
       images,
       reactionTargetMessageIds: [
         ...new Set([
           ...recentMessages.map((candidate) => candidate.messageId),
           ...(replyTo ? [replyTo.messageId] : []),
-          currentMessage.messageId
+          message.id
         ])
       ]
     };

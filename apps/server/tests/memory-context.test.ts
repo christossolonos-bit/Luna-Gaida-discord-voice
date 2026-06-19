@@ -28,7 +28,11 @@ describe('Live memory context', () => {
         privacy: 'private',
         tags: ['marker']
       });
-      const retrieve = createToolRegistry().find((tool) => tool.declaration.name === 'retrieveMemory');
+      const disabled = createToolRegistry();
+      expect(disabled.some((tool) => ['writeMemory', 'retrieveMemory'].includes(String(tool.declaration.name)))).toBe(false);
+
+      const retrieve = createToolRegistry({ memoryToolsEnabled: true })
+        .find((tool) => tool.declaration.name === 'retrieveMemory');
       expect(retrieve).toBeDefined();
 
       const browser = await retrieve!.run({ query: 'orchid' }, { surface: 'browser', memory });

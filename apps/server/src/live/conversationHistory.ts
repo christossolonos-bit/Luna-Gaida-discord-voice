@@ -25,6 +25,12 @@ export class ConversationHistory {
       .join('\n');
   }
 
+  toPromptParts(): Array<{ text: string }> {
+    return this.turns.map((turn) => ({
+      text: `Previous ${turn.role === 'user' ? 'user' : 'assistant'} message: ${turn.text}`
+    }));
+  }
+
   snapshot(): ConversationTurn[] {
     return this.turns.map((turn) => ({ ...turn }));
   }
