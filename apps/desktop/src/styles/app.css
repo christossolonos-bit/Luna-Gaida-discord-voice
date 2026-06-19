@@ -10,6 +10,14 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   background: #f7f3ed;
@@ -46,12 +54,14 @@ button.active {
 .app-shell {
   display: grid;
   grid-template-columns: minmax(420px, 1fr) 420px;
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   background: linear-gradient(135deg, #f7f3ed 0%, #e8edf3 46%, #f4f6f0 100%);
 }
 
 .avatar-pane {
-  min-height: 100vh;
+  min-height: 0;
   position: relative;
   overflow: hidden;
 }
@@ -66,7 +76,9 @@ button.active {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  min-height: 100vh;
+  min-height: 0;
+  height: 100dvh;
+  overflow: hidden;
   padding: 20px;
   border-left: 1px solid rgba(33, 38, 48, 0.13);
   background: rgba(255, 255, 255, 0.82);
@@ -126,7 +138,9 @@ button.active {
 
 .transcript {
   flex: 1;
-  overflow: auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -189,10 +203,11 @@ body.avatar-window #root {
 @media (max-width: 920px) {
   .app-shell {
     grid-template-columns: 1fr;
+    grid-template-rows: 46dvh 54dvh;
   }
 
   .avatar-pane {
-    min-height: 46vh;
+    min-height: 0;
   }
 
   .avatar-stage {
@@ -200,7 +215,7 @@ body.avatar-window #root {
   }
 
   .control-panel {
-    min-height: 54vh;
+    height: 54dvh;
     border-left: 0;
     border-top: 1px solid rgba(33, 38, 48, 0.13);
   }
