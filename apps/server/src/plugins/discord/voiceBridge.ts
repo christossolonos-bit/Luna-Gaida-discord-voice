@@ -11,7 +11,9 @@ import {
   type VoiceConnectionState
 } from '@discordjs/voice';
 import { spawn } from 'node:child_process';
-import { statSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import prism from 'prism-media';
 import type { AppConfig } from '../../config/env.js';
@@ -1495,7 +1497,10 @@ function ytDlpCommonArgs(config: AppConfig) {
   ];
   const cookiesPath = config.YTDLP_COOKIES_PATH?.trim();
   if (cookiesPath && isRegularFile(cookiesPath)) {
-    args.push('--cookies', cookiesPath);
+    const writableCookiesPath = prepareWritableCookiesFile(cookiesPath);
+    if (writableCookiesPath) {
+      args.push('--cookies', writableCookiesPath);
+    }
   }
   const cookiesFromBrowser = config.YTDLP_COOKIES_FROM_BROWSER?.trim();
   if (cookiesFromBrowser) {
@@ -1512,11 +1517,39 @@ function isRegularFile(path: string) {
   }
 }
 
+function prepareWritableCookiesFile(sourcePath: string) {
+  try {
+    const directory = join(tmpdir(), 'giada-yt-dlp');
+    const runtimePath = join(directory, `youtube-cookies-${process.pid}.txt`);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const sourceModifiedAt = statSync(sourcePath).mtimeMs;
+    const runtimeModifiedAt = isRegularFile(runtimePath) ? statSync(runtimePath).mtimeMs : -1;
+    if (sourceModifiedAt > runtimeModifiedAt) {
+      copyFileSync(sourcePath, runtimePath);
+      chmodSync(runtimePath, 0o600);
+      logger.info('Copied read-only yt-dlp cookies to writable runtime storage', {
+        sourcePath,
+        runtimePath
+      });
+    }
+    return runtimePath;
+  } catch (error) {
+    logger.warn('Could not prepare writable yt-dlp cookies file; continuing without cookies', {
+      sourcePath,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
 function compactYtDlpError(error: unknown) {
   const raw = error instanceof Error ? error.message : String(error);
   const errorLine = raw.split(/\r?\n/).reverse().find((line) => line.startsWith('ERROR:')) ?? raw.split(/\r?\n/).find(Boolean) ?? raw;
   if (/Sign in to confirm you.re not a bot|cookies-from-browser|authentication/i.test(raw)) {
     return 'YouTube requires authenticated cookies for this server IP. Export fresh Netscape-format cookies to the configured YTDLP_COOKIES_PATH and restart the service.';
+  }
+  if (/Read-only file system.*cookies/i.test(raw)) {
+    return 'yt-dlp could not update its cookie jar because the configured file is read-only. Restart with the writable runtime-cookie copy enabled.';
   }
   if (/HTTP Error 403|Forbidden|unable to download video data/i.test(raw)) {
     return 'YouTube blocked the media download with HTTP 403. Update yt-dlp first; if it still fails, configure YTDLP_COOKIES_PATH or YTDLP_COOKIES_FROM_BROWSER.';
