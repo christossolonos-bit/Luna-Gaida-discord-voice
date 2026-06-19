@@ -44,7 +44,7 @@ const envSchema = z.object({
   YTDLP_BINARY: z.string().default('yt-dlp'),
   YTDLP_COOKIES_PATH: z.string().optional(),
   YTDLP_COOKIES_FROM_BROWSER: z.string().optional(),
-  YTDLP_PLAYER_CLIENTS: z.string().default('android,web'),
+  YTDLP_PLAYER_CLIENTS: z.string().default('default'),
   FFMPEG_BINARY: z.string().default('ffmpeg'),
   DISCORD_MUSIC_VOLUME: z.coerce.number().min(0).max(1).default(0.35),
   DISCORD_MUSIC_DUCK_VOLUME: z.coerce.number().min(0).max(1).default(0.12),

@@ -957,7 +957,7 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
       '-f', YTDLP_AUDIO_FORMAT,
       '--no-playlist',
       '--no-warnings',
-      ...ytDlpCommonArgs(this.config),
+      ...ytDlpCommonArgs(this.config, track.playerClients),
       '-o', '-',
       track.url
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1181,6 +1181,7 @@ interface YoutubeTrack {
   title: string;
   url: string;
   durationSeconds: number | null;
+  playerClients?: string;
 }
 
 interface PcmQueueEntry {
@@ -1418,40 +1419,50 @@ async function resolveYoutubeTrack(config: AppConfig, query: string): Promise<Yo
 }
 
 async function inspectYoutubeTrack(config: AppConfig, url: string, fallbackTitle: string): Promise<YoutubeTrack> {
-  const output = await captureProcessOutput(config.YTDLP_BINARY, [
-    '--dump-json',
-    '--no-playlist',
-    '--skip-download',
-    '-f', YTDLP_AUDIO_FORMAT,
-    ...ytDlpCommonArgs(config),
-    url
-  ], 25_000);
-  const line = output.split(/\r?\n/).find((candidate) => candidate.trim().startsWith('{'));
-  if (!line) {
-    throw new Error('yt-dlp returned no track metadata');
+  const playerClientOptions = [...new Set([config.YTDLP_PLAYER_CLIENTS.trim() || 'default', 'default'])];
+  let lastError: unknown;
+  for (const playerClients of playerClientOptions) {
+    try {
+      const output = await captureProcessOutput(config.YTDLP_BINARY, [
+        '--dump-json',
+        '--no-playlist',
+        '--skip-download',
+        '-f', YTDLP_AUDIO_FORMAT,
+        ...ytDlpCommonArgs(config, playerClients),
+        url
+      ], 25_000);
+      const line = output.split(/\r?\n/).find((candidate) => candidate.trim().startsWith('{'));
+      if (!line) throw new Error('yt-dlp returned no track metadata');
+      const parsed = JSON.parse(line) as {
+        title?: unknown;
+        webpage_url?: unknown;
+        original_url?: unknown;
+        duration?: unknown;
+        requested_downloads?: unknown;
+        requested_formats?: unknown;
+        formats?: unknown;
+      };
+      if (!hasAudioFormat(parsed)) throw new Error('yt-dlp found the result, but it has no audio formats');
+      const resolvedUrl = firstString(parsed.webpage_url, parsed.original_url);
+      if (!resolvedUrl) throw new Error('yt-dlp track metadata did not include a YouTube URL');
+      return {
+        title: typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title.trim() : fallbackTitle,
+        url: resolvedUrl,
+        durationSeconds: typeof parsed.duration === 'number' && Number.isFinite(parsed.duration) ? parsed.duration : null,
+        playerClients
+      };
+    } catch (error) {
+      lastError = error;
+      if (playerClients !== 'default') {
+        logger.warn('yt-dlp configured player clients failed; retrying with current defaults', {
+          configuredPlayerClients: playerClients,
+          url,
+          error: compactYtDlpError(error)
+        });
+      }
+    }
   }
-  const parsed = JSON.parse(line) as {
-    title?: unknown;
-    webpage_url?: unknown;
-    original_url?: unknown;
-    url?: unknown;
-    duration?: unknown;
-    requested_downloads?: unknown;
-    requested_formats?: unknown;
-    formats?: unknown;
-  };
-  if (!hasAudioFormat(parsed)) {
-    throw new Error('yt-dlp found the result, but it has no audio formats');
-  }
-  const resolvedUrl = firstString(parsed.webpage_url, parsed.original_url);
-  if (!resolvedUrl) {
-    throw new Error('yt-dlp track metadata did not include a YouTube URL');
-  }
-  return {
-    title: typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title.trim() : fallbackTitle,
-    url: resolvedUrl,
-    durationSeconds: typeof parsed.duration === 'number' && Number.isFinite(parsed.duration) ? parsed.duration : null
-  };
+  throw lastError ?? new Error('yt-dlp could not inspect the YouTube track');
 }
 
 function normalizeYoutubeSearchEntry(entry: unknown): YoutubeTrack | null {
@@ -1490,10 +1501,10 @@ function hasAudioFormat(parsed: {
   });
 }
 
-function ytDlpCommonArgs(config: AppConfig) {
+function ytDlpCommonArgs(config: AppConfig, playerClients = config.YTDLP_PLAYER_CLIENTS) {
   const args: string[] = [
     '--extractor-args',
-    `youtube:player_client=${config.YTDLP_PLAYER_CLIENTS}`
+    `youtube:player_client=${playerClients}`
   ];
   const cookiesPath = config.YTDLP_COOKIES_PATH?.trim();
   if (cookiesPath && isRegularFile(cookiesPath)) {

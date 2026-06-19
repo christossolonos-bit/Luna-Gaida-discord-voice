@@ -124,7 +124,7 @@ When asked in Discord voice, Giada can search for and play music through the Liv
 
 ```bash
 YTDLP_BINARY=yt-dlp
-YTDLP_PLAYER_CLIENTS=android,web
+YTDLP_PLAYER_CLIENTS=default
 # Optional, useful when YouTube blocks anonymous media downloads:
 YTDLP_COOKIES_PATH=/path/to/youtube-cookies.txt
 # or:
