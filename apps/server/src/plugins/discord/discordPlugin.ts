@@ -311,10 +311,12 @@ export class DiscordPlugin implements GiadaPlugin {
       }
       void this.registerCommands();
       void this.restoreWatchedVoiceConnections();
+      void this.initializeWatchedTextSessions();
       this.startVoiceWatchReconciliation();
     });
-    this.client.on(Events.GuildCreate, () => {
+    this.client.on(Events.GuildCreate, (guild) => {
       void this.registerCommands();
+      void this.initializeWatchedTextSessions(guild.id);
     });
 
     try {
@@ -344,6 +346,7 @@ export class DiscordPlugin implements GiadaPlugin {
       clearTimeout(timer);
     }
     this.voiceTextMessageIds.clear();
+    this.responder.disposeAll();
     for (const bridge of this.voiceBridges.values()) {
       bridge.destroy();
     }
@@ -685,10 +688,12 @@ export class DiscordPlugin implements GiadaPlugin {
       const channelId = interaction.options.getChannel('channel')?.id ?? interaction.channelId;
       if (mode === 'off') {
         this.settings.removeListeningChannel(interaction.guildId, channelId);
+        this.responder.disposeChannel(interaction.guildId, channelId);
         await this.replyInteraction(interaction, `Listening disabled for <#${channelId}>. I will answer there only when named or mentioned.`);
         return;
       }
       this.settings.addListeningChannel(interaction.guildId, channelId);
+      await this.initializeWatchedTextChannel(interaction.guildId, channelId);
       await this.replyInteraction(interaction, `Listening enabled for <#${channelId}>. I will watch the conversation there and reply when it makes sense.`);
       return;
     }
@@ -802,10 +807,12 @@ export class DiscordPlugin implements GiadaPlugin {
       }
       if (mode === 'off') {
         this.settings.removeListeningChannel(payload.guild_id, channelId);
+        this.responder.disposeChannel(payload.guild_id, channelId);
         await this.updateHttpInteraction(payload, `Listening disabled for <#${channelId}>. I will answer there only when named or mentioned.`);
         return;
       }
       this.settings.addListeningChannel(payload.guild_id, channelId);
+      await this.initializeWatchedTextChannel(payload.guild_id, channelId);
       await this.updateHttpInteraction(payload, `Listening enabled for <#${channelId}>. I will watch the conversation there and reply when it makes sense.`);
       return;
     }
@@ -1462,6 +1469,51 @@ export class DiscordPlugin implements GiadaPlugin {
     const botUser = this.client?.user;
     const name = this.personality.get().name.toLowerCase();
     return Boolean(botUser && message.mentions.has(botUser)) || message.content.toLowerCase().includes(name);
+  }
+
+  private async initializeWatchedTextSessions(onlyGuildId?: string) {
+    const guilds = [...(this.client?.guilds.cache.values() ?? [])]
+      .filter((guild) => !onlyGuildId || guild.id === onlyGuildId);
+    for (const guild of guilds) {
+      for (const channelId of this.settings.get(guild.id).listeningChannelIds) {
+        await this.initializeWatchedTextChannel(guild.id, channelId);
+      }
+    }
+  }
+
+  private async initializeWatchedTextChannel(guildId: string, channelId: string) {
+    const guild = this.client?.guilds.cache.get(guildId);
+    if (!guild) {
+      return;
+    }
+    const channel = guild.channels.cache.get(channelId)
+      ?? await guild.channels.fetch(channelId).catch(() => null);
+    if (!channel) {
+      logger.warn('Could not initialize watched Discord text session because channel was not found', {
+        guildId,
+        channelId
+      });
+      return;
+    }
+    const parent = getThreadParent(channel);
+    const channelNsfw = hasBooleanNsfw(channel)
+      ? channel.nsfw
+      : hasBooleanNsfw(parent) && parent.nsfw;
+    try {
+      await this.responder.initializeChannel(guildId, channelId, channelNsfw);
+      logger.info('Initialized watched Discord text Live session', {
+        guildId,
+        channelId,
+        channelNsfw
+      });
+    } catch (error) {
+      logger.warn('Failed to initialize watched Discord text Live session', {
+        guildId,
+        channelId,
+        channelNsfw,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   private async collectMessageContext(message: Message): Promise<{

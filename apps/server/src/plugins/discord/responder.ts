@@ -70,6 +70,7 @@ interface DiscordReplyInput {
   sendGif?: (url: string, caption?: string) => Promise<Record<string, unknown>>;
   joinRequesterVoiceChannel?: () => Promise<Record<string, unknown>>;
   leaveVoiceChannel?: () => Promise<Record<string, unknown>>;
+  initializeOnly?: boolean;
 }
 
 export class DiscordTextResponder {
@@ -90,6 +91,32 @@ export class DiscordTextResponder {
       searxngUrl: config.SEARXNG_URL,
       memoryToolsEnabled: config.GIADA_MEMORY_TOOLS_ENABLED
     }).filter((tool) => isToolAvailableForSurface(tool, 'discord'));
+  }
+
+  async initializeChannel(guildId: string, channelId: string, channelNsfw: boolean) {
+    await this.reply({
+      guildId,
+      channelId,
+      channelNsfw,
+      authorName: 'system',
+      authorId: 'system',
+      text: '',
+      initializeOnly: true,
+      addReaction: async () => ({ ok: false, error: 'no_active_message' }),
+      sendGif: async () => ({ ok: false, error: 'no_active_message' }),
+      joinRequesterVoiceChannel: async () => ({ ok: false, error: 'no_active_message' }),
+      leaveVoiceChannel: async () => ({ ok: false, error: 'no_active_message' })
+    });
+  }
+
+  disposeChannel(guildId: string, channelId: string) {
+    this.textContexts.get(discordTextContextKey(guildId, channelId))?.dispose();
+  }
+
+  disposeAll() {
+    for (const context of [...this.textContexts.values()]) {
+      context.dispose();
+    }
   }
 
   async reply(input: DiscordReplyInput) {
@@ -131,6 +158,12 @@ export class DiscordTextResponder {
       'Never ping @everyone, @here, or roles. If you do not know the intended user ID, ask who to ping instead of guessing.',
       'If the message does not need a long answer, reply in one short paragraph.'
     ].join('\n');
+
+    if (input.initializeOnly) {
+      const context = this.getTextContext(input, systemInstruction);
+      await context.initialize((functionCalls, session, currentInput) => this.handleLiveToolCalls(functionCalls, session, currentInput));
+      return null;
+    }
 
     const parts: Part[] = [{
       text: [
@@ -354,7 +387,8 @@ export class DiscordTextResponder {
       context = undefined;
     }
     if (!context) {
-      context = new DiscordLiveTextContext(
+      let createdContext: DiscordLiveTextContext;
+      createdContext = new DiscordLiveTextContext(
         key,
         this.ai!,
         this.config.GEMINI_MODEL,
@@ -366,9 +400,12 @@ export class DiscordTextResponder {
           }
         ],
         () => {
-          this.textContexts.delete(key);
+          if (this.textContexts.get(key) === createdContext) {
+            this.textContexts.delete(key);
+          }
         }
       );
+      context = createdContext;
       this.textContexts.set(key, context);
     }
     return context;
@@ -423,6 +460,10 @@ class DiscordLiveTextContext {
 
   hasConfigSignature(configSignature: string) {
     return this.configSignature === configSignature;
+  }
+
+  initialize(handleToolCalls: (functionCalls: FunctionCall[], session: Session, input: DiscordReplyInput) => Promise<void>) {
+    return this.connect(handleToolCalls);
   }
 
   generate(
@@ -580,6 +621,11 @@ class DiscordLiveTextContext {
       }
     }).then((session) => {
       this.session = session;
+      logger.info('Discord Live text session initialized', {
+        key: this.key,
+        model: this.model,
+        declaredToolNames: this.declaredToolNames
+      });
     }).finally(() => {
       this.connecting = null;
     });
