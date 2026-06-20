@@ -51,7 +51,7 @@ services:
     environment:
       SEARXNG_BASE_URL: http://searxng:8080/
     volumes:
-      - searxng_data:/etc/searxng
+      - ./deploy/searxng:/etc/searxng:ro
       - searxng_cache:/var/cache/searxng
     networks:
       - default
@@ -63,5 +63,4 @@ networks:
 volumes:
   giada_data:
   giada_config:
-  searxng_data:
   searxng_cache:
