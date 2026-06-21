@@ -22,6 +22,7 @@ import { routeText, textCredits, type TextProviderRoute } from '../../providers/
 import { assertDiscordSafe, sanitizeForDiscord, stripThinkBlocks } from '../../policy/privacy.js';
 import { createToolRegistry, isToolAvailableForSurface, type MusicController, type RegisteredTool } from '../../tools/registry.js';
 import { logger } from '../../logging/logger.js';
+import { appendTurnText } from '../../live/conversationHistory.js';
 import {
   describeDiscordImages,
   generateDiscordTextWithNvidia,
@@ -137,7 +138,7 @@ export class DiscordTextResponder {
   }
 
   async reply(input: DiscordReplyInput) {
-    const provider = await this.resolveProvider(input.guildId);
+    const provider = await this.resolveProvider(input.guildId, input.channelId);
     if (provider.route.provider === 'blocked') return 'This server has used its monthly allowance. Add a Groq BYOK key or upgrade the server plan.';
     const effectiveNsfw = input.channelNsfw && provider.runtime.settings.nsfwEnabled && provider.runtime.features.nsfw;
     const routedInput = { ...input, channelNsfw: effectiveNsfw, planFeatures: provider.runtime.features };
@@ -240,7 +241,7 @@ export class DiscordTextResponder {
     return safe.text;
   }
 
-  private async resolveProvider(guildId: string) {
+  private async resolveProvider(guildId: string, channelId: string) {
     if (!this.platform) {
       const { revision: _revision, ...profile } = this.personality.get();
       const runtime = {
@@ -256,7 +257,7 @@ export class DiscordTextResponder {
           maxPersonalityLength: 8000, maxMessageLength: 8000
         },
         settings: {
-          listeningChannelIds: [], voiceWatchChannelIds: [],
+          listeningChannelIds: [], voiceWatchChannelIds: [], listeningChannelModels: {}, voiceWatchChannelModels: {},
           nickname: null, avatarUrl: null, nsfwEnabled: true, textProvider: 'auto' as const, voiceProvider: 'auto' as const,
           browserTextEnabled: true, browserVoiceEnabled: true,
           voiceChanger: { enabled: true, name: 'legacy', ffmpegFilter: 'anull' }, musicVolume: 0.35, musicDuckVolume: 0.12
@@ -265,7 +266,11 @@ export class DiscordTextResponder {
       };
       return { runtime, route: { provider: 'gemini', credential: 'private', charge: 'none', reason: 'legacy' } as TextProviderRoute, usage: null };
     }
-    const runtime = await this.platform.getGuildRuntime(guildId);
+    const baseRuntime = await this.platform.getGuildRuntime(guildId);
+    const channelProvider = baseRuntime.settings.listeningChannelModels[channelId];
+    const runtime = channelProvider && channelProvider !== 'auto'
+      ? { ...baseRuntime, settings: { ...baseRuntime.settings, textProvider: channelProvider } }
+      : baseRuntime;
     const credentials = await this.platform.listCredentials(guildId);
     const usage = await this.platform.getUsage(guildId);
     return {
@@ -880,7 +885,7 @@ class DiscordLiveTextContext {
 
     const text = extractLiveText(message);
     if (text) {
-      current.outputText = appendTranscriptText(current.outputText, text);
+      current.outputText = appendTurnText(current.outputText, text);
       if (current.serverComplete) this.scheduleCurrentCompletion(current, DISCORD_LIVE_TRANSCRIPTION_SETTLE_MS);
     }
     current.audioParts += countAudioParts(message);
@@ -1352,37 +1357,6 @@ function countAudioParts(message: LiveServerMessage) {
         && (!inlineData.mimeType || inlineData.mimeType.startsWith('audio/'));
     })
     .length;
-}
-
-function appendTranscriptText(previous: string, incoming: string) {
-  const normalizedIncoming = incoming.replace(/\s+/g, ' ');
-  if (!normalizedIncoming.trim()) {
-    return previous;
-  }
-  if (!previous) {
-    return normalizedIncoming;
-  }
-  if (normalizedIncoming.startsWith(previous)) {
-    return normalizedIncoming;
-  }
-
-  const trimmedIncoming = normalizedIncoming.trim();
-  if (previous.endsWith(trimmedIncoming)) {
-    return previous;
-  }
-  if (previous.endsWith(' ') || normalizedIncoming.startsWith(' ')) {
-    return `${previous}${normalizedIncoming}`;
-  }
-
-  const previousLast = previous.at(-1) ?? '';
-  const incomingFirst = trimmedIncoming.at(0) ?? '';
-  const noSpaceBeforeIncoming = /^[,.;:!?)]$/.test(incomingFirst);
-  const noSpaceAfterPrevious = previousLast === '(' || (/[\p{L}\p{N}]$/u.test(previousLast) && incomingFirst === "'");
-  const wordBoundary = /[\p{L}\p{N}"']$/u.test(previousLast) && /^[\p{L}\p{N}"(]$/u.test(incomingFirst);
-  const sentenceBoundary = /[.!?]$/.test(previousLast) && /^[\p{L}\p{N}"'(]$/u.test(incomingFirst);
-  const needsSpace = !noSpaceBeforeIncoming && !noSpaceAfterPrevious && (wordBoundary || sentenceBoundary);
-
-  return `${previous}${needsSpace ? ' ' : ''}${trimmedIncoming}`;
 }
 
 function shouldStaySilent(text: string) {

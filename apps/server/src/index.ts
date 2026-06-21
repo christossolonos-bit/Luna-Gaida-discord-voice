@@ -19,7 +19,7 @@ import { registerWebRoutes } from './web/routes.js';
 import { personalityProfileForRuntime } from './platform/store.js';
 import { LiveUsageMeter } from './platform/liveUsageMeter.js';
 import { BrowserRealtimeSession } from './ws/browserSession.js';
-import { ZodError } from 'zod';
+import { z, ZodError } from 'zod';
 
 const config = loadConfig();
 const ignoredProviderEnvironmentKeys = ['GEMINI_API_KEY', 'GROQ_API_KEYS', 'NVIDIA_API_KEY'].filter((name) => Boolean(process.env[name]));
@@ -130,7 +130,31 @@ attachRealtimeServer(server, () => new LiveSessionManager(config, memory, person
     if (!sessionId) return null;
     const auth = await platform.store.getSession(sessionId);
     if (!auth) return null;
-    const token = platform.store.decryptSessionAccessToken(auth.session.encryptedAccessToken);
+    let token = platform.store.decryptSessionAccessToken(auth.session.encryptedAccessToken);
+    if (auth.session.tokenExpiresAt.getTime() <= Date.now() + 60_000) {
+      const refreshToken = platform.store.decryptSessionRefreshToken(auth.session.encryptedRefreshToken);
+      if (!refreshToken || !config.DISCORD_APPLICATION_ID || !config.DISCORD_CLIENT_SECRET) return null;
+      const body = new URLSearchParams({
+        client_id: config.DISCORD_APPLICATION_ID,
+        client_secret: config.DISCORD_CLIENT_SECRET,
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken
+      });
+      const response = await fetch('https://discord.com/api/v10/oauth2/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+        signal: AbortSignal.timeout(15_000)
+      });
+      if (!response.ok) return null;
+      const refreshed = z.object({ access_token: z.string(), refresh_token: z.string().optional(), expires_in: z.number() }).parse(await response.json());
+      token = refreshed.access_token;
+      await platform.store.updateSessionTokens(auth.session.id, {
+        accessToken: token,
+        ...(refreshed.refresh_token ? { refreshToken: refreshed.refresh_token } : {}),
+        tokenExpiresAt: new Date(Date.now() + refreshed.expires_in * 1000)
+      });
+    }
     const guildResponse = await fetch('https://discord.com/api/v10/users/@me/guilds', {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(15_000)

@@ -6,6 +6,7 @@ import './styles.css';
 import './chat.css';
 import './admin.css';
 import './voice-changer.css';
+import './channels.css';
 import { AdminPanel } from './AdminPanel';
 
 interface RuntimePayload {
@@ -27,6 +28,8 @@ interface VoiceProfile { id: string; name: string; ffmpegFilter: string }
 interface GuildSettings {
   listeningChannelIds: string[];
   voiceWatchChannelIds: string[];
+  listeningChannelModels: Record<string, 'auto' | 'groq' | 'gemini'>;
+  voiceWatchChannelModels: Record<string, 'auto' | 'gemini'>;
   nickname: string | null;
   avatarUrl: string | null;
   nsfwEnabled: boolean;
@@ -131,7 +134,13 @@ function Login() {
 
 function General({ guildId, payload, onSave }: { guildId: string; payload: RuntimePayload; onSave: (value: RuntimePayload) => void }) {
   const [state, setState] = useState(payload);
+  const [channelData, setChannelData] = useState<ChannelData | null>(null);
+  const [channelError, setChannelError] = useState('');
   useEffect(() => setState(payload), [payload]);
+  useEffect(() => {
+    setChannelData(null); setChannelError('');
+    void api<ChannelData>(`/api/guilds/${guildId}/channels`).then(setChannelData).catch((error) => setChannelError(error instanceof Error ? error.message : String(error)));
+  }, [guildId]);
   const settings = state.runtime.settings;
   const set = (patch: Partial<GuildSettings>) => setState({ ...state, runtime: { ...state.runtime, settings: { ...settings, ...patch } } });
   return <form onSubmit={(event) => { event.preventDefault(); void onSave(state); }}>
@@ -142,7 +151,11 @@ function General({ guildId, payload, onSave }: { guildId: string; payload: Runti
       <div className="grid"><Field label="Text provider"><select value={settings.textProvider} onChange={(e) => set({ textProvider: e.target.value as GuildSettings['textProvider'] })}><option value="auto">Automatic</option><option value="groq">Groq</option><option value="gemini">Gemini Live</option></select></Field><Field label="Voice provider"><select value={settings.voiceProvider} onChange={(e) => set({ voiceProvider: e.target.value as GuildSettings['voiceProvider'] })}><option value="auto">Automatic</option><option value="gemini">Gemini Live</option></select></Field></div>
       <Toggle label="NSFW responses" detail="Still restricted to Discord age-restricted channels." value={settings.nsfwEnabled} disabled={!state.runtime.features.nsfw} onChange={(value) => set({ nsfwEnabled: value })} />
       <Toggle label="Browser text chat" detail="Uses this server's personality and allowance." value={settings.browserTextEnabled} disabled={!state.runtime.features.browserChat} onChange={(value) => set({ browserTextEnabled: value })} />
-      <div className="grid"><Field label="Always-listen channel IDs"><input value={settings.listeningChannelIds.join(', ')} onChange={(e) => set({ listeningChannelIds: splitList(e.target.value) })} /></Field><Field label="Voice-watch channel IDs"><input value={settings.voiceWatchChannelIds.join(', ')} onChange={(e) => set({ voiceWatchChannelIds: splitList(e.target.value) })} /></Field></div>
+      {channelError && <p className="profile-error">Could not load Discord channels: {channelError}</p>}
+      <div className="grid channel-manager-grid">
+        <ChannelManager kind="text" title="Always-listen channels" channelIds={settings.listeningChannelIds} models={settings.listeningChannelModels} channels={channelData?.channels ?? []} modelOptions={channelData?.textModels ?? [{ id: 'auto', name: 'Automatic' }]} onChange={(channelIds, models) => set({ listeningChannelIds: channelIds, listeningChannelModels: models as GuildSettings['listeningChannelModels'] })} />
+        <ChannelManager kind="voice" title="Voice-watch channels" channelIds={settings.voiceWatchChannelIds} models={settings.voiceWatchChannelModels} channels={channelData?.channels ?? []} modelOptions={channelData?.voiceModels ?? []} onChange={(channelIds, models) => set({ voiceWatchChannelIds: channelIds, voiceWatchChannelModels: models as GuildSettings['voiceWatchChannelModels'] })} />
+      </div>
     </Section>
     <Section title="Voice changer" description="FFmpeg filter applied to generated speech, not music." icon={<Volume2 />}>
       <Toggle label="Enable voice changer" detail={state.runtime.features.voiceChanger ? 'Applied to Discord and browser voice.' : 'Not available on this plan.'} value={settings.voiceChanger.enabled} disabled={!state.runtime.features.voiceChanger} onChange={(enabled) => set({ voiceChanger: { ...settings.voiceChanger, enabled } })} />
@@ -150,6 +163,52 @@ function General({ guildId, payload, onSave }: { guildId: string; payload: Runti
     </Section>
     <button className="primary">Save changes</button>
   </form>;
+}
+
+interface ChannelInfo { id: string; name: string; kind: 'text' | 'voice'; nsfw: boolean }
+interface ModelOption { id: string; name: string }
+interface ChannelData { channels: ChannelInfo[]; textModels: ModelOption[]; voiceModels: ModelOption[] }
+
+function ChannelManager({ kind, title, channelIds, models, channels, modelOptions, onChange }: {
+  kind: 'text' | 'voice'; title: string; channelIds: string[]; models: Record<string, string>;
+  channels: ChannelInfo[]; modelOptions: ModelOption[]; onChange: (channelIds: string[], models: Record<string, string>) => void;
+}) {
+  const [channelId, setChannelId] = useState('');
+  const [model, setModel] = useState('auto');
+  const [error, setError] = useState('');
+  const available = channels.filter((channel) => channel.kind === kind && !channelIds.includes(channel.id));
+  const add = () => {
+    const id = channelId.trim();
+    const channel = channels.find((item) => item.id === id && item.kind === kind);
+    if (!/^\d+$/.test(id)) { setError('Enter a valid Discord channel ID.'); return; }
+    if (!channel) { setError(`The bot cannot find that ${kind} channel in this server.`); return; }
+    if (channelIds.includes(id)) { setError('That channel is already configured.'); return; }
+    setError('');
+    onChange([...channelIds, id], { ...models, [id]: model });
+    setChannelId(''); setModel('auto');
+  };
+  return <div className="channel-manager">
+    <strong>{title}</strong>
+    {modelOptions.length === 0 && <small className="channel-plan-note">No compatible model is enabled by this plan.</small>}
+    <div className="channel-add">
+      <input disabled={modelOptions.length === 0} list={`${kind}-channels`} placeholder="Channel ID" value={channelId} onChange={(event) => setChannelId(event.target.value)} />
+      <datalist id={`${kind}-channels`}>{available.map((channel) => <option key={channel.id} value={channel.id}>{channel.name}</option>)}</datalist>
+      <select disabled={modelOptions.length === 0} value={model} onChange={(event) => setModel(event.target.value)}>{modelOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select>
+      <button disabled={modelOptions.length === 0} type="button" onClick={add}>Add</button>
+    </div>
+    {error && <small className="profile-error">{error}</small>}
+    <div className="channel-list">{channelIds.length === 0 && <small>No channels configured.</small>}{channelIds.map((id) => {
+      const channel = channels.find((item) => item.id === id);
+      const selectedModel = models[id] ?? 'auto';
+      const options = modelOptions.some((option) => option.id === selectedModel) ? modelOptions : [{ id: selectedModel, name: `${selectedModel} (not available on plan)` }, ...modelOptions];
+      return <div className="channel-item" key={id}>
+        <div><b>{channel ? `${kind === 'text' ? '#' : '🔊 '}${channel.name}` : id}</b><small>{id}</small></div>
+        {channel?.nsfw && <span className="nsfw-badge">NSFW</span>}
+        <select value={selectedModel} onChange={(event) => onChange(channelIds, { ...models, [id]: event.target.value })}>{options.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select>
+        <button type="button" className="danger" onClick={() => { const next = { ...models }; delete next[id]; onChange(channelIds.filter((item) => item !== id), next); }}>Remove</button>
+      </div>;
+    })}</div>
+  </div>;
 }
 
 interface VoiceProfileValues {
@@ -179,7 +238,7 @@ function VoiceChangerEditor({ guildId, value, profiles, disabled, onChange, onPr
     const name = selectedProfile === 'unsaved' || customProfile ? value.name : `${value.name}-custom`;
     onChange({ ...value, name, ffmpegFilter: buildVoiceFilter({ ...values, ...patch }) });
   };
-  const numeric = (label: string, key: keyof VoiceProfileValues, min: number, max: number, step: number) => <Field label={label}><input disabled={disabled} type="number" min={min} max={max} step={step} value={values[key]} onChange={(event) => update({ [key]: Number(event.target.value) })} /></Field>;
+  const numeric = (label: string, key: keyof VoiceProfileValues, min: number, max: number) => <Field label={label}><input disabled={disabled} type="number" min={min} max={max} step="any" value={values[key]} onChange={(event) => update({ [key]: Number(event.target.value) })} /></Field>;
   return <div className="voice-editor">
     <div className="grid">
       <Field label="Current profile"><select disabled={disabled} value={selectedProfile} onChange={(event) => {
@@ -207,9 +266,9 @@ function VoiceChangerEditor({ guildId, value, profiles, disabled, onChange, onPr
       }}>Delete profile</button>}
       {profileError && <small className="profile-error">{profileError}</small>}
     </div>
-    <div className="voice-control-group"><strong>Pitch and level</strong><div className="grid">{numeric('Pitch (semitones)', 'pitchSemitones', -12, 12, 0.1)}{numeric('Output volume', 'volume', 0, 3, 0.01)}</div></div>
-    <div className="voice-control-group"><strong>Frequency shaping</strong><div className="grid">{numeric('High-pass frequency (Hz)', 'highpass', 20, 2_000, 1)}{numeric('Low-pass frequency (Hz)', 'lowpass', 1_000, 20_000, 1)}{numeric('Treble gain (dB)', 'trebleGain', -20, 20, 0.1)}{numeric('Treble frequency (Hz)', 'trebleFrequency', 1_000, 12_000, 1)}</div></div>
-    <div className="voice-control-group"><strong>Compressor</strong><div className="grid">{numeric('Threshold (dB)', 'compressorThreshold', -60, 0, 0.1)}{numeric('Ratio', 'compressorRatio', 1, 20, 0.1)}{numeric('Attack (ms)', 'compressorAttack', 0.01, 2_000, 0.1)}{numeric('Release (ms)', 'compressorRelease', 0.01, 9_000, 0.1)}</div></div>
+    <div className="voice-control-group"><strong>Pitch and level</strong><div className="grid">{numeric('Pitch (semitones)', 'pitchSemitones', -12, 12)}{numeric('Output volume', 'volume', 0, 3)}</div></div>
+    <div className="voice-control-group"><strong>Frequency shaping</strong><div className="grid">{numeric('High-pass frequency (Hz)', 'highpass', 20, 2_000)}{numeric('Low-pass frequency (Hz)', 'lowpass', 1_000, 20_000)}{numeric('Treble gain (dB)', 'trebleGain', -20, 20)}{numeric('Treble frequency (Hz)', 'trebleFrequency', 1_000, 12_000)}</div></div>
+    <div className="voice-control-group"><strong>Compressor</strong><div className="grid">{numeric('Threshold (dB)', 'compressorThreshold', -60, 0)}{numeric('Ratio', 'compressorRatio', 1, 20)}{numeric('Attack (ms)', 'compressorAttack', 0.01, 2_000)}{numeric('Release (ms)', 'compressorRelease', 0.01, 9_000)}</div></div>
   </div>;
 }
 
@@ -289,22 +348,50 @@ function BrowserChat({ guildId, voiceEnabled }: { guildId: string; voiceEnabled:
   const [recording, setRecording] = useState(false);
   const audio = useMemo(() => new PcmPlayer(), []);
   useEffect(() => {
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${location.host}/realtime?surface=browser&guildId=${guildId}`);
-    ws.onopen = () => { setStatus('connected'); ws.send(JSON.stringify({ type: 'connect', surface: 'browser' })); };
-    ws.onclose = (event) => setStatus(event.reason || 'disconnected');
-    ws.onmessage = (event) => {
-      const value = JSON.parse(event.data) as { type: string; speaker?: string; text?: string; final?: boolean; data?: string; status?: string; reason?: string };
-      if (value.type === 'status') setStatus(value.status ?? value.reason ?? 'unknown');
-      if (value.type === 'transcript' && value.text) setMessages((current) => mergeBrowserTranscript(current, {
-        speaker: value.speaker ?? 'assistant',
-        text: value.text!,
-        final: value.final === true
-      }));
-      if (value.type === 'audio' && value.data) void audio.enqueue(value.data);
+    let disposed = false;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempts = 0;
+    const connect = () => {
+      if (disposed) return;
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      setStatus(reconnectAttempts ? 'reconnecting' : 'connecting');
+      ws = new WebSocket(`${protocol}//${location.host}/realtime?surface=browser&guildId=${guildId}`);
+      setSocket(ws);
+      ws.onopen = () => {
+        reconnectAttempts = 0;
+        setStatus('connected');
+        ws?.send(JSON.stringify({ type: 'connect', surface: 'browser' }));
+      };
+      ws.onclose = (event) => {
+        if (disposed) return;
+        setSocket(null);
+        if (event.code === 1008) {
+          setStatus(event.reason || 'session rejected');
+          return;
+        }
+        setStatus(event.reason || 'reconnecting');
+        const delay = Math.min(1_000 * 2 ** reconnectAttempts, 15_000);
+        reconnectAttempts += 1;
+        reconnectTimer = setTimeout(connect, delay);
+      };
+      ws.onmessage = (event) => {
+        const value = JSON.parse(event.data) as { type: string; speaker?: string; text?: string; final?: boolean; data?: string; status?: string; reason?: string };
+        if (value.type === 'status') setStatus(value.status ?? value.reason ?? 'unknown');
+        if (value.type === 'transcript' && value.text) setMessages((current) => mergeBrowserTranscript(current, {
+          speaker: value.speaker ?? 'assistant', text: value.text!, final: value.final === true
+        }));
+        if (value.type === 'audio' && value.data) void audio.enqueue(value.data);
+      };
     };
-    setSocket(ws);
-    return () => { ws.close(); void audio.close(); };
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      ws?.close();
+      setSocket(null);
+      void audio.close();
+    };
   }, [guildId, audio]);
   const send = () => {
     if (!text.trim() || socket?.readyState !== WebSocket.OPEN) return;
@@ -324,7 +411,7 @@ function mergeBrowserTranscript(current: BrowserChatMessage[], incoming: Browser
   const last = next[next.length - 1];
   if (last?.speaker === incoming.speaker && last.final && normalized === last.text) return current;
   if (last?.speaker === incoming.speaker && !last.final) {
-    next[next.length - 1] = { ...last, text: appendBrowserTranscript(last.text, normalized), final: incoming.final };
+    next[next.length - 1] = { ...last, text: incoming.final ? normalized : appendBrowserTranscript(last.text, normalized), final: incoming.final };
     return next.slice(-100);
   }
   next.push({ ...incoming, text: normalized });
@@ -334,6 +421,8 @@ function mergeBrowserTranscript(current: BrowserChatMessage[], incoming: Browser
 function appendBrowserTranscript(previous: string, incoming: string) {
   if (incoming.startsWith(previous)) return incoming;
   if (previous.endsWith(incoming)) return previous;
+  const overlap = longestBrowserTranscriptOverlap(previous, incoming);
+  if (overlap > 0) return `${previous}${incoming.slice(overlap)}`;
   const previousLast = previous.at(-1) ?? '';
   const incomingFirst = incoming.at(0) ?? '';
   const needsSpace = !previous.endsWith(' ') && !incoming.startsWith(' ')
@@ -341,6 +430,13 @@ function appendBrowserTranscript(previous: string, incoming: string) {
     && ((/[\p{L}\p{N}"']$/u.test(previousLast) && /^[\p{L}\p{N}"'(]$/u.test(incomingFirst))
       || (/[.!?]$/.test(previousLast) && /^[\p{L}\p{N}"'(]$/u.test(incomingFirst)));
   return `${previous}${needsSpace ? ' ' : ''}${incoming}`;
+}
+
+function longestBrowserTranscriptOverlap(previous: string, incoming: string) {
+  for (let length = Math.min(previous.length, incoming.length); length >= 3; length -= 1) {
+    if (previous.slice(-length) === incoming.slice(0, length)) return length;
+  }
+  return 0;
 }
 
 let activeMic: { stream: MediaStream; context: AudioContext; processor: ScriptProcessorNode } | null = null;

@@ -1,0 +1,14 @@
+.channel-manager-grid { align-items: start; margin-top: 16px; }
+.channel-manager { border: 1px solid #252d40; border-radius: 10px; padding: 15px; }
+.channel-manager > strong { display: block; font-size: 13px; margin-bottom: 12px; }
+.channel-add { display: grid; gap: 8px; grid-template-columns: 1fr; }
+.channel-add button,.channel-item button { background: #171d2b; border: 1px solid #343d53; border-radius: 7px; color: #cbd2e2; cursor: pointer; padding: 9px 12px; }
+.channel-list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.channel-list > small { color: #727c93; }
+.channel-plan-note { color: #d8a36f; display: block; font-size: 11px; margin: -4px 0 10px; }
+.channel-item { align-items: center; background: #111725; border-radius: 8px; display: grid; gap: 8px; grid-template-columns: minmax(110px,1fr) auto minmax(130px,1fr) auto; padding: 10px; }
+.channel-item > div { min-width: 0; }
+.channel-item b,.channel-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channel-item b { font-size: 12px; }.channel-item small { color: #727c93; font-size: 10px; margin-top: 2px; }
+.nsfw-badge { background: #63283b; border-radius: 999px; color: #ffbdc9; font-size: 9px; font-weight: 700; padding: 4px 7px; }
+@media(max-width:900px){.channel-item{grid-template-columns:1fr auto}.channel-item select{grid-column:1/-1}}

@@ -19,6 +19,9 @@ export function routeText(input: {
   if (runtime.settings.textProvider === 'groq' && input.hasGroqByok && runtime.features.byokGroq) {
     return { provider: 'groq', credential: 'byok', charge: 'none', reason: 'guild_groq_byok' };
   }
+  if (runtime.settings.textProvider === 'groq' && runtime.features.groqText && (runtime.planKind !== 'free' || input.sharedQuotaAvailable)) {
+    return { provider: 'groq', credential: 'shared', charge: runtime.planKind === 'free' ? 'message' : 'none', reason: 'guild_shared_groq' };
+  }
   if (runtime.planKind === 'private' && runtime.features.geminiText) {
     return { provider: 'gemini', credential: 'private', charge: 'none', reason: 'private_plan' };
   }

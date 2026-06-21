@@ -103,7 +103,7 @@ function mergeTranscript(current: TranscriptLine[], detail: Extract<RealtimeEven
   }
 
   if (last && last.speaker === detail.speaker && !last.final) {
-    const text = appendTranscriptText(last.text, normalized);
+    const text = detail.final ? normalized : appendTranscriptText(last.text, normalized);
     next[next.length - 1] = { ...last, text, final: detail.final };
     return next.slice(-80);
   }
@@ -123,6 +123,9 @@ function appendTranscriptText(previous: string, incoming: string) {
   }
   if (previous.endsWith(incoming)) {
     return previous;
+  }
+  for (let length = Math.min(previous.length, incoming.length); length >= 3; length -= 1) {
+    if (previous.slice(-length) === incoming.slice(0, length)) return `${previous}${incoming.slice(length)}`;
   }
 
   const previousLast = previous.at(-1) ?? '';

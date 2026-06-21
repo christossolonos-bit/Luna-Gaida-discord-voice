@@ -37,22 +37,38 @@ export class ConversationHistory {
 }
 
 export function appendTurnText(previous: string, incoming: string) {
-  const next = incoming.trim();
+  const current = previous.replace(/\s+/g, ' ').trim();
+  const next = incoming.replace(/\s+/g, ' ').trim();
   if (!next) {
-    return previous;
+    return current;
   }
-  if (!previous || next.startsWith(previous)) {
+  if (!current || next.startsWith(current)) {
     return next;
   }
-  if (previous.endsWith(next)) {
-    return previous;
+  if (current.endsWith(next)) {
+    return current;
   }
 
+  const overlap = longestTextOverlap(current, next);
+  if (overlap > 0) return `${current}${next.slice(overlap)}`;
+
   const needsSpace =
-    !previous.endsWith(' ') &&
+    !current.endsWith(' ') &&
+    !/^[,.;:!?)]/.test(next) &&
     (/^\s/.test(incoming) || (
-      /[\p{L}\p{N}"']$/u.test(previous) &&
+      /[\p{L}\p{N}"']$/u.test(current) &&
       /^[\p{L}\p{N}"']/u.test(next)
     ));
-  return `${previous}${needsSpace ? ' ' : ''}${next}`;
+  return `${current}${needsSpace ? ' ' : ''}${next}`;
+}
+
+function longestTextOverlap(previous: string, incoming: string) {
+  const maximum = Math.min(previous.length, incoming.length);
+  for (let length = maximum; length >= 3; length -= 1) {
+    if (previous.slice(-length) !== incoming.slice(0, length)) continue;
+    const startsAtBoundary = length === previous.length || /[^\p{L}\p{N}]/u.test(previous.at(-length - 1) ?? ' ');
+    const endsAtBoundary = length === incoming.length || /[^\p{L}\p{N}]/u.test(incoming.at(length) ?? ' ');
+    if (startsAtBoundary || endsAtBoundary) return length;
+  }
+  return 0;
 }

@@ -7,6 +7,7 @@ import './styles.css';
 import './chat.css';
 import './admin.css';
 import './voice-changer.css';
+import './channels.css';
 import { AdminPanel } from './AdminPanel';
 function App() {
     const [me, setMe] = useState(null);
@@ -56,11 +57,50 @@ function Login() {
 }
 function General({ guildId, payload, onSave }) {
     const [state, setState] = useState(payload);
+    const [channelData, setChannelData] = useState(null);
+    const [channelError, setChannelError] = useState('');
     useEffect(() => setState(payload), [payload]);
+    useEffect(() => {
+        setChannelData(null);
+        setChannelError('');
+        void api(`/api/guilds/${guildId}/channels`).then(setChannelData).catch((error) => setChannelError(error instanceof Error ? error.message : String(error)));
+    }, [guildId]);
     const settings = state.runtime.settings;
     const set = (patch) => setState({ ...state, runtime: { ...state.runtime, settings: { ...settings, ...patch } } });
     return _jsxs("form", { onSubmit: (event) => { event.preventDefault(); void onSave(state); }, children: [_jsx(Section, { title: "Bot identity", description: "Discord applies these values only in this server.", icon: _jsx(Bot, {}), children: _jsxs("div", { className: "grid", children: [_jsx(Field, { label: "Server nickname", children: _jsx("input", { disabled: !state.runtime.features.customIdentity, value: settings.nickname ?? '', maxLength: 32, onChange: (e) => set({ nickname: e.target.value || null }) }) }), _jsx(Field, { label: "Avatar image", children: _jsx("input", { disabled: !state.runtime.features.customIdentity, type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", onChange: (e) => { const file = e.target.files?.[0]; if (!file)
-                                    return; const form = new FormData(); form.append('file', file); void api(`/api/guilds/${guildId}/avatar`, { method: 'POST', body: form }).then(({ runtime }) => setState({ ...state, runtime })); } }) })] }) }), _jsxs(Section, { title: "Response settings", description: "Choose enabled modalities and server behavior.", icon: _jsx(MessageSquare, {}), children: [_jsxs("div", { className: "grid", children: [_jsx(Field, { label: "Text provider", children: _jsxs("select", { value: settings.textProvider, onChange: (e) => set({ textProvider: e.target.value }), children: [_jsx("option", { value: "auto", children: "Automatic" }), _jsx("option", { value: "groq", children: "Groq" }), _jsx("option", { value: "gemini", children: "Gemini Live" })] }) }), _jsx(Field, { label: "Voice provider", children: _jsxs("select", { value: settings.voiceProvider, onChange: (e) => set({ voiceProvider: e.target.value }), children: [_jsx("option", { value: "auto", children: "Automatic" }), _jsx("option", { value: "gemini", children: "Gemini Live" })] }) })] }), _jsx(Toggle, { label: "NSFW responses", detail: "Still restricted to Discord age-restricted channels.", value: settings.nsfwEnabled, disabled: !state.runtime.features.nsfw, onChange: (value) => set({ nsfwEnabled: value }) }), _jsx(Toggle, { label: "Browser text chat", detail: "Uses this server's personality and allowance.", value: settings.browserTextEnabled, disabled: !state.runtime.features.browserChat, onChange: (value) => set({ browserTextEnabled: value }) }), _jsxs("div", { className: "grid", children: [_jsx(Field, { label: "Always-listen channel IDs", children: _jsx("input", { value: settings.listeningChannelIds.join(', '), onChange: (e) => set({ listeningChannelIds: splitList(e.target.value) }) }) }), _jsx(Field, { label: "Voice-watch channel IDs", children: _jsx("input", { value: settings.voiceWatchChannelIds.join(', '), onChange: (e) => set({ voiceWatchChannelIds: splitList(e.target.value) }) }) })] })] }), _jsxs(Section, { title: "Voice changer", description: "FFmpeg filter applied to generated speech, not music.", icon: _jsx(Volume2, {}), children: [_jsx(Toggle, { label: "Enable voice changer", detail: state.runtime.features.voiceChanger ? 'Applied to Discord and browser voice.' : 'Not available on this plan.', value: settings.voiceChanger.enabled, disabled: !state.runtime.features.voiceChanger, onChange: (enabled) => set({ voiceChanger: { ...settings.voiceChanger, enabled } }) }), _jsx(VoiceChangerEditor, { guildId: guildId, value: settings.voiceChanger, profiles: state.voiceProfiles, disabled: !state.runtime.features.voiceChanger, onProfilesChange: (voiceProfiles) => setState({ ...state, voiceProfiles }), onChange: (voiceChanger) => set({ voiceChanger }) })] }), _jsx("button", { className: "primary", children: "Save changes" })] });
+                                    return; const form = new FormData(); form.append('file', file); void api(`/api/guilds/${guildId}/avatar`, { method: 'POST', body: form }).then(({ runtime }) => setState({ ...state, runtime })); } }) })] }) }), _jsxs(Section, { title: "Response settings", description: "Choose enabled modalities and server behavior.", icon: _jsx(MessageSquare, {}), children: [_jsxs("div", { className: "grid", children: [_jsx(Field, { label: "Text provider", children: _jsxs("select", { value: settings.textProvider, onChange: (e) => set({ textProvider: e.target.value }), children: [_jsx("option", { value: "auto", children: "Automatic" }), _jsx("option", { value: "groq", children: "Groq" }), _jsx("option", { value: "gemini", children: "Gemini Live" })] }) }), _jsx(Field, { label: "Voice provider", children: _jsxs("select", { value: settings.voiceProvider, onChange: (e) => set({ voiceProvider: e.target.value }), children: [_jsx("option", { value: "auto", children: "Automatic" }), _jsx("option", { value: "gemini", children: "Gemini Live" })] }) })] }), _jsx(Toggle, { label: "NSFW responses", detail: "Still restricted to Discord age-restricted channels.", value: settings.nsfwEnabled, disabled: !state.runtime.features.nsfw, onChange: (value) => set({ nsfwEnabled: value }) }), _jsx(Toggle, { label: "Browser text chat", detail: "Uses this server's personality and allowance.", value: settings.browserTextEnabled, disabled: !state.runtime.features.browserChat, onChange: (value) => set({ browserTextEnabled: value }) }), channelError && _jsxs("p", { className: "profile-error", children: ["Could not load Discord channels: ", channelError] }), _jsxs("div", { className: "grid channel-manager-grid", children: [_jsx(ChannelManager, { kind: "text", title: "Always-listen channels", channelIds: settings.listeningChannelIds, models: settings.listeningChannelModels, channels: channelData?.channels ?? [], modelOptions: channelData?.textModels ?? [{ id: 'auto', name: 'Automatic' }], onChange: (channelIds, models) => set({ listeningChannelIds: channelIds, listeningChannelModels: models }) }), _jsx(ChannelManager, { kind: "voice", title: "Voice-watch channels", channelIds: settings.voiceWatchChannelIds, models: settings.voiceWatchChannelModels, channels: channelData?.channels ?? [], modelOptions: channelData?.voiceModels ?? [], onChange: (channelIds, models) => set({ voiceWatchChannelIds: channelIds, voiceWatchChannelModels: models }) })] })] }), _jsxs(Section, { title: "Voice changer", description: "FFmpeg filter applied to generated speech, not music.", icon: _jsx(Volume2, {}), children: [_jsx(Toggle, { label: "Enable voice changer", detail: state.runtime.features.voiceChanger ? 'Applied to Discord and browser voice.' : 'Not available on this plan.', value: settings.voiceChanger.enabled, disabled: !state.runtime.features.voiceChanger, onChange: (enabled) => set({ voiceChanger: { ...settings.voiceChanger, enabled } }) }), _jsx(VoiceChangerEditor, { guildId: guildId, value: settings.voiceChanger, profiles: state.voiceProfiles, disabled: !state.runtime.features.voiceChanger, onProfilesChange: (voiceProfiles) => setState({ ...state, voiceProfiles }), onChange: (voiceChanger) => set({ voiceChanger }) })] }), _jsx("button", { className: "primary", children: "Save changes" })] });
+}
+function ChannelManager({ kind, title, channelIds, models, channels, modelOptions, onChange }) {
+    const [channelId, setChannelId] = useState('');
+    const [model, setModel] = useState('auto');
+    const [error, setError] = useState('');
+    const available = channels.filter((channel) => channel.kind === kind && !channelIds.includes(channel.id));
+    const add = () => {
+        const id = channelId.trim();
+        const channel = channels.find((item) => item.id === id && item.kind === kind);
+        if (!/^\d+$/.test(id)) {
+            setError('Enter a valid Discord channel ID.');
+            return;
+        }
+        if (!channel) {
+            setError(`The bot cannot find that ${kind} channel in this server.`);
+            return;
+        }
+        if (channelIds.includes(id)) {
+            setError('That channel is already configured.');
+            return;
+        }
+        setError('');
+        onChange([...channelIds, id], { ...models, [id]: model });
+        setChannelId('');
+        setModel('auto');
+    };
+    return _jsxs("div", { className: "channel-manager", children: [_jsx("strong", { children: title }), modelOptions.length === 0 && _jsx("small", { className: "channel-plan-note", children: "No compatible model is enabled by this plan." }), _jsxs("div", { className: "channel-add", children: [_jsx("input", { disabled: modelOptions.length === 0, list: `${kind}-channels`, placeholder: "Channel ID", value: channelId, onChange: (event) => setChannelId(event.target.value) }), _jsx("datalist", { id: `${kind}-channels`, children: available.map((channel) => _jsx("option", { value: channel.id, children: channel.name }, channel.id)) }), _jsx("select", { disabled: modelOptions.length === 0, value: model, onChange: (event) => setModel(event.target.value), children: modelOptions.map((option) => _jsx("option", { value: option.id, children: option.name }, option.id)) }), _jsx("button", { disabled: modelOptions.length === 0, type: "button", onClick: add, children: "Add" })] }), error && _jsx("small", { className: "profile-error", children: error }), _jsxs("div", { className: "channel-list", children: [channelIds.length === 0 && _jsx("small", { children: "No channels configured." }), channelIds.map((id) => {
+                        const channel = channels.find((item) => item.id === id);
+                        const selectedModel = models[id] ?? 'auto';
+                        const options = modelOptions.some((option) => option.id === selectedModel) ? modelOptions : [{ id: selectedModel, name: `${selectedModel} (not available on plan)` }, ...modelOptions];
+                        return _jsxs("div", { className: "channel-item", children: [_jsxs("div", { children: [_jsx("b", { children: channel ? `${kind === 'text' ? '#' : '🔊 '}${channel.name}` : id }), _jsx("small", { children: id })] }), channel?.nsfw && _jsx("span", { className: "nsfw-badge", children: "NSFW" }), _jsx("select", { value: selectedModel, onChange: (event) => onChange(channelIds, { ...models, [id]: event.target.value }), children: options.map((option) => _jsx("option", { value: option.id, children: option.name }, option.id)) }), _jsx("button", { type: "button", className: "danger", onClick: () => { const next = { ...models }; delete next[id]; onChange(channelIds.filter((item) => item !== id), next); }, children: "Remove" })] }, id);
+                    })] })] });
 }
 const defaultVoiceValues = {
     highpass: 100, lowpass: 13_500, trebleGain: 2.5, trebleFrequency: 4_000,
@@ -81,7 +121,7 @@ function VoiceChangerEditor({ guildId, value, profiles, disabled, onChange, onPr
         const name = selectedProfile === 'unsaved' || customProfile ? value.name : `${value.name}-custom`;
         onChange({ ...value, name, ffmpegFilter: buildVoiceFilter({ ...values, ...patch }) });
     };
-    const numeric = (label, key, min, max, step) => _jsx(Field, { label: label, children: _jsx("input", { disabled: disabled, type: "number", min: min, max: max, step: step, value: values[key], onChange: (event) => update({ [key]: Number(event.target.value) }) }) });
+    const numeric = (label, key, min, max) => _jsx(Field, { label: label, children: _jsx("input", { disabled: disabled, type: "number", min: min, max: max, step: "any", value: values[key], onChange: (event) => update({ [key]: Number(event.target.value) }) }) });
     return _jsxs("div", { className: "voice-editor", children: [_jsxs("div", { className: "grid", children: [_jsx(Field, { label: "Current profile", children: _jsxs("select", { disabled: disabled, value: selectedProfile, onChange: (event) => {
                                 const [kind, id] = event.target.value.split(':');
                                 const preset = kind === 'builtin' ? voicePresets.find((item) => item.name === id) : undefined;
@@ -102,7 +142,7 @@ function VoiceChangerEditor({ guildId, value, profiles, disabled, onChange, onPr
                             void api(`/api/guilds/${guildId}/voice-profiles/${customProfile.id}`, { method: 'DELETE' })
                                 .then(() => onProfilesChange(profiles.filter((item) => item.id !== customProfile.id)))
                                 .catch((error) => setProfileError(error instanceof Error ? error.message : String(error)));
-                        }, children: "Delete profile" }), profileError && _jsx("small", { className: "profile-error", children: profileError })] }), _jsxs("div", { className: "voice-control-group", children: [_jsx("strong", { children: "Pitch and level" }), _jsxs("div", { className: "grid", children: [numeric('Pitch (semitones)', 'pitchSemitones', -12, 12, 0.1), numeric('Output volume', 'volume', 0, 3, 0.01)] })] }), _jsxs("div", { className: "voice-control-group", children: [_jsx("strong", { children: "Frequency shaping" }), _jsxs("div", { className: "grid", children: [numeric('High-pass frequency (Hz)', 'highpass', 20, 2_000, 1), numeric('Low-pass frequency (Hz)', 'lowpass', 1_000, 20_000, 1), numeric('Treble gain (dB)', 'trebleGain', -20, 20, 0.1), numeric('Treble frequency (Hz)', 'trebleFrequency', 1_000, 12_000, 1)] })] }), _jsxs("div", { className: "voice-control-group", children: [_jsx("strong", { children: "Compressor" }), _jsxs("div", { className: "grid", children: [numeric('Threshold (dB)', 'compressorThreshold', -60, 0, 0.1), numeric('Ratio', 'compressorRatio', 1, 20, 0.1), numeric('Attack (ms)', 'compressorAttack', 0.01, 2_000, 0.1), numeric('Release (ms)', 'compressorRelease', 0.01, 9_000, 0.1)] })] })] });
+                        }, children: "Delete profile" }), profileError && _jsx("small", { className: "profile-error", children: profileError })] }), _jsxs("div", { className: "voice-control-group", children: [_jsx("strong", { children: "Pitch and level" }), _jsxs("div", { className: "grid", children: [numeric('Pitch (semitones)', 'pitchSemitones', -12, 12), numeric('Output volume', 'volume', 0, 3)] })] }), _jsxs("div", { className: "voice-control-group", children: [_jsx("strong", { children: "Frequency shaping" }), _jsxs("div", { className: "grid", children: [numeric('High-pass frequency (Hz)', 'highpass', 20, 2_000), numeric('Low-pass frequency (Hz)', 'lowpass', 1_000, 20_000), numeric('Treble gain (dB)', 'trebleGain', -20, 20), numeric('Treble frequency (Hz)', 'trebleFrequency', 1_000, 12_000)] })] }), _jsxs("div", { className: "voice-control-group", children: [_jsx("strong", { children: "Compressor" }), _jsxs("div", { className: "grid", children: [numeric('Threshold (dB)', 'compressorThreshold', -60, 0), numeric('Ratio', 'compressorRatio', 1, 20), numeric('Attack (ms)', 'compressorAttack', 0.01, 2_000), numeric('Release (ms)', 'compressorRelease', 0.01, 9_000)] })] })] });
 }
 function parseVoiceFilter(filter) {
     if (filter.trim() === 'anull')
@@ -162,25 +202,56 @@ function BrowserChat({ guildId, voiceEnabled }) {
     const [recording, setRecording] = useState(false);
     const audio = useMemo(() => new PcmPlayer(), []);
     useEffect(() => {
-        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const ws = new WebSocket(`${protocol}//${location.host}/realtime?surface=browser&guildId=${guildId}`);
-        ws.onopen = () => { setStatus('connected'); ws.send(JSON.stringify({ type: 'connect', surface: 'browser' })); };
-        ws.onclose = (event) => setStatus(event.reason || 'disconnected');
-        ws.onmessage = (event) => {
-            const value = JSON.parse(event.data);
-            if (value.type === 'status')
-                setStatus(value.status ?? value.reason ?? 'unknown');
-            if (value.type === 'transcript' && value.text)
-                setMessages((current) => mergeBrowserTranscript(current, {
-                    speaker: value.speaker ?? 'assistant',
-                    text: value.text,
-                    final: value.final === true
-                }));
-            if (value.type === 'audio' && value.data)
-                void audio.enqueue(value.data);
+        let disposed = false;
+        let ws = null;
+        let reconnectTimer = null;
+        let reconnectAttempts = 0;
+        const connect = () => {
+            if (disposed)
+                return;
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            setStatus(reconnectAttempts ? 'reconnecting' : 'connecting');
+            ws = new WebSocket(`${protocol}//${location.host}/realtime?surface=browser&guildId=${guildId}`);
+            setSocket(ws);
+            ws.onopen = () => {
+                reconnectAttempts = 0;
+                setStatus('connected');
+                ws?.send(JSON.stringify({ type: 'connect', surface: 'browser' }));
+            };
+            ws.onclose = (event) => {
+                if (disposed)
+                    return;
+                setSocket(null);
+                if (event.code === 1008) {
+                    setStatus(event.reason || 'session rejected');
+                    return;
+                }
+                setStatus(event.reason || 'reconnecting');
+                const delay = Math.min(1_000 * 2 ** reconnectAttempts, 15_000);
+                reconnectAttempts += 1;
+                reconnectTimer = setTimeout(connect, delay);
+            };
+            ws.onmessage = (event) => {
+                const value = JSON.parse(event.data);
+                if (value.type === 'status')
+                    setStatus(value.status ?? value.reason ?? 'unknown');
+                if (value.type === 'transcript' && value.text)
+                    setMessages((current) => mergeBrowserTranscript(current, {
+                        speaker: value.speaker ?? 'assistant', text: value.text, final: value.final === true
+                    }));
+                if (value.type === 'audio' && value.data)
+                    void audio.enqueue(value.data);
+            };
         };
-        setSocket(ws);
-        return () => { ws.close(); void audio.close(); };
+        connect();
+        return () => {
+            disposed = true;
+            if (reconnectTimer)
+                clearTimeout(reconnectTimer);
+            ws?.close();
+            setSocket(null);
+            void audio.close();
+        };
     }, [guildId, audio]);
     const send = () => {
         if (!text.trim() || socket?.readyState !== WebSocket.OPEN)
@@ -201,7 +272,7 @@ function mergeBrowserTranscript(current, incoming) {
     if (last?.speaker === incoming.speaker && last.final && normalized === last.text)
         return current;
     if (last?.speaker === incoming.speaker && !last.final) {
-        next[next.length - 1] = { ...last, text: appendBrowserTranscript(last.text, normalized), final: incoming.final };
+        next[next.length - 1] = { ...last, text: incoming.final ? normalized : appendBrowserTranscript(last.text, normalized), final: incoming.final };
         return next.slice(-100);
     }
     next.push({ ...incoming, text: normalized });
@@ -212,6 +283,9 @@ function appendBrowserTranscript(previous, incoming) {
         return incoming;
     if (previous.endsWith(incoming))
         return previous;
+    const overlap = longestBrowserTranscriptOverlap(previous, incoming);
+    if (overlap > 0)
+        return `${previous}${incoming.slice(overlap)}`;
     const previousLast = previous.at(-1) ?? '';
     const incomingFirst = incoming.at(0) ?? '';
     const needsSpace = !previous.endsWith(' ') && !incoming.startsWith(' ')
@@ -219,6 +293,13 @@ function appendBrowserTranscript(previous, incoming) {
         && ((/[\p{L}\p{N}"']$/u.test(previousLast) && /^[\p{L}\p{N}"'(]$/u.test(incomingFirst))
             || (/[.!?]$/.test(previousLast) && /^[\p{L}\p{N}"'(]$/u.test(incomingFirst)));
     return `${previous}${needsSpace ? ' ' : ''}${incoming}`;
+}
+function longestBrowserTranscriptOverlap(previous, incoming) {
+    for (let length = Math.min(previous.length, incoming.length); length >= 3; length -= 1) {
+        if (previous.slice(-length) === incoming.slice(0, length))
+            return length;
+    }
+    return 0;
 }
 let activeMic = null;
 async function startMicrophone(socket) {

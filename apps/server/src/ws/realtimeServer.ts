@@ -73,17 +73,41 @@ export function attachRealtimeServer(
   };
 
   wss.on('connection', async (socket: WebSocket, request: IncomingMessage) => {
+    let heartbeatAlive = true;
+    const heartbeat = setInterval(() => {
+      if (!heartbeatAlive) {
+        socket.terminate();
+        return;
+      }
+      heartbeatAlive = false;
+      socket.ping();
+    }, 25_000);
+    heartbeat.unref();
+    socket.on('pong', () => { heartbeatAlive = true; });
     const url = new URL(request.url ?? '/realtime', `http://${request.headers.host ?? 'localhost'}`);
     let context: RealtimeContext = url.searchParams.get('surface') === 'browser' ? 'browser' : 'app';
     const initialContext = context;
     if (context === 'app' && !isLoopbackAddress(request.socket.remoteAddress)) {
+      clearInterval(heartbeat);
       socket.close(1008, 'local_app_connection_required');
       return;
     }
     if (context === 'browser') {
       const guildId = url.searchParams.get('guildId');
-      const live = guildId && options.createBrowserLive ? await options.createBrowserLive(request, guildId).catch(() => null) : null;
+      let live: RealtimeSession | null = null;
+      try {
+        live = guildId && options.createBrowserLive ? await options.createBrowserLive(request, guildId) : null;
+      } catch (error) {
+        logger.warn('Could not initialize browser realtime session', {
+          guildId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        clearInterval(heartbeat);
+        socket.close(1011, 'browser_session_initialization_failed');
+        return;
+      }
       if (!live) {
+        clearInterval(heartbeat);
         socket.close(1008, 'browser_authentication_or_plan_required');
         return;
       }
@@ -151,6 +175,7 @@ export function attachRealtimeServer(
     });
 
     socket.on('close', () => {
+      clearInterval(heartbeat);
       sockets.delete(socket);
       browserLive.get(socket)?.dispose();
       browserLive.delete(socket);

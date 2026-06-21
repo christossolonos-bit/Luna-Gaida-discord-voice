@@ -13,6 +13,7 @@ const ADMINISTRATOR = 0x8n;
 
 interface DiscordUser { id: string; username: string; avatar?: string | null }
 interface DiscordGuild { id: string; name: string; icon?: string | null; owner?: boolean; permissions: string }
+interface DiscordChannel { id: string; name?: string; type: number; nsfw?: boolean; parent_id?: string | null }
 
 export async function registerWebRoutes(app: FastifyInstance, config: AppConfig, store: PlatformStore) {
   const stripe = config.STRIPE_SECRET_KEY ? new Stripe(config.STRIPE_SECRET_KEY) : null;
@@ -93,6 +94,40 @@ export async function registerWebRoutes(app: FastifyInstance, config: AppConfig,
     if (!context) return;
     const body = z.object({ settings: z.unknown().optional(), personality: z.unknown().optional() }).parse(request.body);
     return { runtime: await store.updateGuildConfig(context.guild.id, body, context.auth.user.id) };
+  });
+
+  app.get('/api/guilds/:guildId/channels', async (request, reply) => {
+    const context = await authorizeGuild(request, reply, store, config);
+    if (!context) return;
+    if (!config.DISCORD_BOT_TOKEN) return reply.code(503).send({ error: 'discord_bot_not_configured' });
+    const response = await fetch(`${DISCORD_API}/guilds/${context.guild.id}/channels`, {
+      headers: { Authorization: `Bot ${config.DISCORD_BOT_TOKEN}` },
+      signal: AbortSignal.timeout(15_000)
+    });
+    if (!response.ok) return reply.code(502).send({ error: 'discord_channels_fetch_failed' });
+    const runtime = await store.getGuildRuntime(context.guild.id);
+    const channels = z.array(z.object({
+      id: z.string(), name: z.string().optional(), type: z.number(), nsfw: z.boolean().optional(), parent_id: z.string().nullable().optional()
+    })).parse(await response.json()) as DiscordChannel[];
+    return {
+      channels: channels.filter((channel) => [0, 2, 5, 13, 15].includes(channel.type)).map((channel) => ({
+        id: channel.id,
+        name: channel.name ?? channel.id,
+        type: channel.type,
+        kind: [2, 13].includes(channel.type) ? 'voice' : 'text',
+        nsfw: Boolean(channel.nsfw),
+        parentId: channel.parent_id ?? null
+      })),
+      textModels: [
+        { id: 'auto', name: 'Automatic' },
+        ...(runtime.features.groqText || runtime.features.byokGroq ? [{ id: 'groq', name: `Groq · ${config.GROQ_MODEL}` }] : []),
+        ...(runtime.features.geminiText ? [{ id: 'gemini', name: `Gemini Live · ${config.GEMINI_MODEL}` }] : [])
+      ],
+      voiceModels: runtime.features.geminiVoice ? [
+        { id: 'auto', name: 'Automatic' },
+        { id: 'gemini', name: `Gemini Live · ${config.GEMINI_MODEL}` }
+      ] : []
+    };
   });
 
   app.post('/api/guilds/:guildId/voice-profiles', async (request, reply) => {

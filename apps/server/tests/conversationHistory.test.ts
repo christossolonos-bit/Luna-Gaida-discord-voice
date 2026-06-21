@@ -34,5 +34,7 @@ describe('conversation history', () => {
     expect(appendTurnText('Hello', ' there')).toBe('Hello there');
     expect(appendTurnText('Hello', 'Hello there')).toBe('Hello there');
     expect(appendTurnText('Hello there', 'there')).toBe('Hello there');
+    expect(appendTurnText('I think that phrase', 'that phrase continues here')).toBe('I think that phrase continues here');
+    expect(appendTurnText('One complete sentence.', 'sentence. Another one.')).toBe('One complete sentence. Another one.');
   });
 });

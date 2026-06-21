@@ -4,6 +4,8 @@ import { personalitySchema } from '../personality/service.js';
 export const guildSettingsSchema = z.object({
   listeningChannelIds: z.array(z.string().regex(/^\d+$/)).max(50).default([]),
   voiceWatchChannelIds: z.array(z.string().regex(/^\d+$/)).max(20).default([]),
+  listeningChannelModels: z.record(z.string().regex(/^\d+$/), z.enum(['auto', 'groq', 'gemini'])).default({}),
+  voiceWatchChannelModels: z.record(z.string().regex(/^\d+$/), z.enum(['auto', 'gemini'])).default({}),
   nickname: z.string().trim().min(1).max(32).nullable().default(null),
   avatarUrl: z.string().url().nullable().default(null),
   nsfwEnabled: z.boolean().default(false),

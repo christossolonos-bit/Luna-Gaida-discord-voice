@@ -197,6 +197,10 @@ export class PlatformStore {
       throw new Error('custom_identity_not_enabled');
     }
     if (settings.nsfwEnabled && !current.features.nsfw) throw new Error('nsfw_not_enabled');
+    if (settings.voiceWatchChannelIds.length > 0 && !current.features.geminiVoice) throw new Error('gemini_voice_not_enabled');
+    if (Object.values(settings.listeningChannelModels).includes('gemini') && !current.features.geminiText) throw new Error('gemini_text_not_enabled');
+    if (Object.values(settings.listeningChannelModels).includes('groq') && !current.features.groqText && !current.features.byokGroq) throw new Error('groq_text_not_enabled');
+    if (Object.values(settings.voiceWatchChannelModels).includes('gemini') && !current.features.geminiVoice) throw new Error('gemini_voice_not_enabled');
     await this.database.db.insert(guildSettings).values({ guildId, settings, personality, updatedBy: userId })
       .onConflictDoUpdate({ target: guildSettings.guildId, set: { settings, personality, updatedBy: userId, updatedAt: new Date() } });
     await this.notifyGuild(guildId);

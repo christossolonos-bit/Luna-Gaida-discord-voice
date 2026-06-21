@@ -34,6 +34,12 @@ describe('plan provider routing', () => {
   it('routes private guilds to private Gemini', () => {
     expect(routeText({ runtime: runtime('private', PRIVATE_FEATURES), hasGroqByok: false, hasGeminiByok: false, sharedQuotaAvailable: true, paidCreditsAvailable: true })).toMatchObject({ provider: 'gemini', credential: 'private', charge: 'none' });
   });
+
+  it('honors an explicit shared Groq selection on private plans', () => {
+    const selected = runtime('private', PRIVATE_FEATURES);
+    selected.settings.textProvider = 'groq';
+    expect(routeText({ runtime: selected, hasGroqByok: false, hasGeminiByok: false, sharedQuotaAvailable: true, paidCreditsAvailable: true })).toMatchObject({ provider: 'groq', credential: 'shared' });
+  });
 });
 
 describe('usage units', () => {
@@ -50,6 +56,8 @@ describe('guild configuration validation', () => {
     const settings = guildSettingsSchema.parse({});
     expect(settings.nsfwEnabled).toBe(false);
     expect(settings.listeningChannelIds).toEqual([]);
+    expect(settings.listeningChannelModels).toEqual({});
+    expect(settings.voiceWatchChannelModels).toEqual({});
     expect(guildPersonalitySchema.parse({})).not.toHaveProperty('revision');
   });
 });
