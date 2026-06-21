@@ -98,7 +98,10 @@ function App() {
 
   return <div className="shell">
     <aside>
-      <div className="brand"><span><Sparkles size={19} /></span><div>Giada<small>Control center</small></div></div>
+      <div className="brand">
+        <img src="/GiadaPfp.png" className="brand-logo-img" alt="Giada" />
+        <div>Giada<small>Control center</small></div>
+      </div>
       <label className="guild-label">Discord server</label>
       <select value={selected ?? ''} onChange={(event) => setSelected(event.target.value)}>
         {guilds.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
@@ -130,7 +133,25 @@ function App() {
 }
 
 function Login() {
-  return <div className="login"><div className="login-card"><div className="logo-large"><Sparkles /></div><p>GIADA CONTROL CENTER</p><h1>Every server,<br />its own character.</h1><span>Configure personality, voice, providers, and usage from one secure dashboard.</span><a href="/api/auth/discord">Continue with Discord <ChevronRight /></a><small>Only server owners and administrators can change settings.</small></div></div>;
+  return (
+    <div className="login">
+      <div className="login-card">
+        <div className="login-banner-container">
+          <img src="/GiadaBanner.png" className="login-banner" alt="Giada Banner" />
+        </div>
+        <div className="login-logo-container">
+          <img src="/GiadaPfp.png" className="login-logo" alt="Giada Logo" />
+        </div>
+        <p className="login-subtitle">GIADA CONTROL CENTER</p>
+        <h1 className="login-title">Every server,<br />its own character.</h1>
+        <span className="login-description">Configure personality, voice, providers, and usage from one secure dashboard.</span>
+        <a href="/api/auth/discord" className="login-btn">
+          Continue with Discord <ChevronRight size={16} />
+        </a>
+        <small className="login-footer">Only server owners and administrators can change settings.</small>
+      </div>
+    </div>
+  );
 }
 
 function General({ guildId, payload, onSave }: { guildId: string; payload: RuntimePayload; onSave: (value: RuntimePayload) => void }) {
@@ -400,7 +421,35 @@ function BrowserChat({ guildId, voiceEnabled }: { guildId: string; voiceEnabled:
     socket.send(JSON.stringify({ type: 'text', text: text.trim(), requestId: crypto.randomUUID() }));
     setText('');
   };
-  return <section className="chat"><div className="chat-status"><span className={status === 'connected' ? 'online' : ''} />{status}</div><div className="messages">{messages.length === 0 && <div className="empty">Start a conversation using this server's personality.</div>}{messages.map((message, index) => <div key={index} className={`bubble ${message.speaker}`}>{message.text}</div>)}</div><div className="composer"><button className={recording ? 'recording' : ''} disabled={!voiceEnabled} onPointerDown={() => void startMicrophone(socket!).then(() => setRecording(true))} onPointerUp={() => { stopMicrophone(socket); setRecording(false); }}><Mic /></button><input value={text} placeholder="Message Giada…" onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') send(); }} /><button onClick={send}><Send /></button></div></section>;
+  return (
+    <section className="chat">
+      <div className="chat-status">
+        <span className={status === 'connected' ? 'online' : ''} />
+        {status}
+      </div>
+      <div className="messages">
+        {messages.length === 0 && <div className="empty">Start a conversation using this server's personality.</div>}
+        {messages.map((message, index) => (
+          <div key={index} className={`message-row ${message.speaker}`}>
+            {message.speaker === 'assistant' && (
+              <div className="message-avatar">
+                <img src="/GiadaPfp.png" alt="Giada" />
+              </div>
+            )}
+            <div className="bubble">
+              <div className="bubble-speaker-label">{message.speaker === 'user' ? 'You' : 'Giada'}</div>
+              <div className="bubble-text">{message.text}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="composer">
+        <button className={recording ? 'recording' : ''} disabled={!voiceEnabled} onPointerDown={() => void startMicrophone(socket!).then(() => setRecording(true))} onPointerUp={() => { stopMicrophone(socket); setRecording(false); }}><Mic size={17} /></button>
+        <input value={text} placeholder="Message Giada…" onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') send(); }} />
+        <button onClick={send}><Send size={17} /></button>
+      </div>
+    </section>
+  );
 }
 
 interface BrowserChatMessage { speaker: string; text: string; final: boolean }

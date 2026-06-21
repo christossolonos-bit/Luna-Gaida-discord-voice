@@ -1,4 +1,158 @@
-.plan-row{width:100%;border:0;background:transparent;color:inherit;cursor:pointer;text-align:left}.plan-row:hover{background:#121927}.section-body>.row button,.row>.danger{border:1px solid #3a2f3c;background:#211823;color:#ffadad;border-radius:7px;padding:7px 10px}
-.plan-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:18px}.plan-card{display:flex;flex-direction:column;gap:9px;padding:16px;border:1px solid #293147;border-radius:10px}.plan-card p{color:#7d879d;font-size:12px;min-height:34px;margin:0}.plan-card b{font-family:'Space Grotesk';font-size:15px}.plan-card button{margin-top:7px}
-.row-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}.row-actions button{border:1px solid #343d53;color:#cbd2e2;background:#171d2b;border-radius:7px;padding:7px 10px;cursor:pointer}.key-editor{grid-template-columns:minmax(150px,1fr) minmax(150px,1fr) minmax(220px,2fr) auto auto auto}.key-enabled{display:flex;align-items:center;gap:7px;font-size:12px;color:#aab4c8}.key-enabled input{width:auto}.private-state{font-size:11px;color:#7d879d;border:1px solid #323a4f;border-radius:999px;padding:5px 9px}.private-state.active{color:#8df0c8;border-color:#386f5c;background:#173228}@media(max-width:900px){.key-editor{grid-template-columns:1fr}.row-actions{flex-wrap:wrap}}
-.private-assign-form{grid-template-columns:minmax(240px,1fr) auto;margin-bottom:12px}@media(max-width:700px){.private-assign-form{grid-template-columns:1fr}}
+.plan-row {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease;
+}
+
+.plan-row:hover {
+  background: rgba(50, 115, 244, 0.08);
+}
+
+.section-body > .row button, .row > .danger {
+  border: 1px solid rgba(255, 155, 155, 0.25);
+  background: rgba(255, 155, 155, 0.04);
+  color: #ff9b9b;
+  border-radius: 5px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.section-body > .row button:hover, .row > .danger:hover {
+  background: rgba(255, 155, 155, 0.15);
+  border-color: #ff9b9b;
+}
+
+/* Pricing Plan Cards */
+.plan-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px;
+  border: 1px solid rgba(142, 172, 237, 0.12);
+  border-radius: 16px;
+  background: rgba(7, 24, 74, 0.15);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(10px);
+}
+
+.plan-card strong {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--color-pearl);
+}
+
+.plan-card p {
+  color: var(--color-fog);
+  font-size: 13px;
+  min-height: 40px;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.plan-card b {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-pearl);
+  margin-top: 4px;
+}
+
+.plan-card button {
+  margin-top: 10px;
+  width: 100%;
+}
+
+/* Row Action items */
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.row-actions button {
+  border: 1px solid rgba(142, 172, 237, 0.15);
+  color: var(--color-lilac-white);
+  background: rgba(7, 24, 74, 0.25);
+  border-radius: 5px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 12px;
+}
+
+.row-actions button:hover {
+  background: rgba(50, 115, 244, 0.10);
+  border-color: var(--color-lavender-accent);
+}
+
+/* Key Editor layouts */
+.key-editor {
+  grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) minmax(200px, 2fr) auto auto auto;
+}
+
+.key-enabled {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-ash);
+  cursor: pointer;
+}
+
+.key-enabled input {
+  width: auto;
+  cursor: pointer;
+}
+
+/* Private states */
+.private-state {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-fog);
+  border: 1px solid rgba(142, 172, 237, 0.15);
+  border-radius: 32px;
+  padding: 4px 10px;
+  background: rgba(7, 24, 74, 0.2);
+}
+
+.private-state.active {
+  color: #39e3a7;
+  border-color: rgba(57, 227, 167, 0.35);
+  background: rgba(57, 227, 167, 0.08);
+  box-shadow: 0 0 10px rgba(57, 227, 167, 0.1);
+}
+
+/* Forms in Private Guild sections */
+.private-assign-form {
+  grid-template-columns: minmax(240px, 1fr) auto;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 900px) {
+  .key-editor {
+    grid-template-columns: 1fr;
+  }
+  .row-actions {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 700px) {
+  .private-assign-form {
+    grid-template-columns: 1fr;
+  }
+}
