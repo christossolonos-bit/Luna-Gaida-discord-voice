@@ -1,7 +1,8 @@
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { Server } from 'node:http';
+import type { IncomingMessage, Server } from 'node:http';
 import { z } from 'zod';
-import type { LiveSessionManager, LiveSurface } from '../live/liveSession.js';
+import type { LiveSurface } from '../live/liveSession.js';
+import type { LiveClientEvent, LiveInputEvent } from '../live/liveSession.js';
 import { logger } from '../logging/logger.js';
 
 const realtimeSurfaceSchema = z.enum(['app', 'browser']).optional();
@@ -19,10 +20,24 @@ const clientEventSchema = z.discriminatedUnion('type', [
 
 type RealtimeContext = 'app' | 'browser';
 
-export function attachRealtimeServer(server: Server, createLive: (context: RealtimeContext) => LiveSessionManager) {
+export interface RealtimeSession {
+  setEmitter(emit: (event: LiveClientEvent) => void): void;
+  emitCurrentStatus(): void;
+  connect(surface?: LiveSurface): Promise<void>;
+  handleInput(input: LiveInputEvent, surface?: LiveSurface): Promise<void>;
+  close(): void;
+  dispose(): void;
+}
+
+export function attachRealtimeServer(
+  server: Server,
+  createLive: (context: RealtimeContext) => RealtimeSession,
+  options: { createBrowserLive?: ((request: IncomingMessage, guildId: string) => Promise<RealtimeSession | null>) | undefined } = {}
+) {
   const wss = new WebSocketServer({ server, path: '/realtime' });
   const sockets = new Map<WebSocket, RealtimeContext>();
-  const liveContexts = new Map<RealtimeContext, LiveSessionManager>();
+  const liveContexts = new Map<RealtimeContext, RealtimeSession>();
+  const browserLive = new Map<WebSocket, RealtimeSession>();
 
   const getLive = (context: RealtimeContext) => {
     let live = liveContexts.get(context);
@@ -56,26 +71,53 @@ export function attachRealtimeServer(server: Server, createLive: (context: Realt
     getLive(context).emitCurrentStatus();
   };
 
-  wss.on('connection', (socket: WebSocket) => {
-    let context: RealtimeContext = 'app';
+  wss.on('connection', async (socket: WebSocket, request: IncomingMessage) => {
+    const url = new URL(request.url ?? '/realtime', `http://${request.headers.host ?? 'localhost'}`);
+    let context: RealtimeContext = url.searchParams.get('surface') === 'browser' ? 'browser' : 'app';
+    const initialContext = context;
+    if (context === 'app' && !isLoopbackAddress(request.socket.remoteAddress)) {
+      socket.close(1008, 'local_app_connection_required');
+      return;
+    }
+    if (context === 'browser') {
+      const guildId = url.searchParams.get('guildId');
+      const live = guildId && options.createBrowserLive ? await options.createBrowserLive(request, guildId).catch(() => null) : null;
+      if (!live) {
+        socket.close(1008, 'browser_authentication_or_plan_required');
+        return;
+      }
+      browserLive.set(socket, live);
+      live.setEmitter((event) => {
+        if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(event));
+      });
+    }
     sockets.set(socket, context);
-    sendStatus(context);
+    const currentLive = () => context === 'browser' ? browserLive.get(socket) : getLive(context);
+    currentLive()?.emitCurrentStatus();
 
     socket.on('message', (raw) => {
       try {
         const parsed = clientEventSchema.parse(JSON.parse(raw.toString()));
         if (parsed.type === 'connect') {
           const nextContext = parsed.surface ?? 'app';
+          if (nextContext !== initialContext) {
+            socket.send(JSON.stringify({ type: 'error', reason: 'surface_is_fixed_for_connection' }));
+            return;
+          }
+          if (nextContext === 'browser' && !browserLive.has(socket)) {
+            socket.send(JSON.stringify({ type: 'error', reason: 'reconnect_with_authenticated_guild' }));
+            return;
+          }
           if (nextContext !== context) {
             const previousContext = context;
             context = nextContext;
             sockets.set(socket, context);
             closeContextIfIdle(previousContext);
-            sendStatus(context);
+            currentLive()?.emitCurrentStatus();
           }
-          void getLive(context).connect(toLiveSurface(context));
+          void currentLive()?.connect(toLiveSurface(context));
         } else if (parsed.type === 'disconnect') {
-          getLive(context).close();
+          currentLive()?.close();
         } else {
           if (parsed.type === 'text' && parsed.requestId && socket.readyState === socket.OPEN) {
             socket.send(JSON.stringify({
@@ -84,7 +126,7 @@ export function attachRealtimeServer(server: Server, createLive: (context: Realt
               inputType: 'text'
             }));
           }
-          void getLive(context).handleInput(parsed, toLiveSurface(context)).catch((error) => {
+          void currentLive()?.handleInput(parsed, toLiveSurface(context)).catch((error) => {
             logger.warn('Realtime input handling failed', {
               context,
               type: parsed.type,
@@ -109,6 +151,8 @@ export function attachRealtimeServer(server: Server, createLive: (context: Realt
 
     socket.on('close', () => {
       sockets.delete(socket);
+      browserLive.get(socket)?.dispose();
+      browserLive.delete(socket);
       closeContextIfIdle(context);
     });
   });
@@ -118,4 +162,8 @@ export function attachRealtimeServer(server: Server, createLive: (context: Realt
 
 function toLiveSurface(context: RealtimeContext): LiveSurface {
   return context === 'browser' ? 'browser' : 'desktop';
+}
+
+function isLoopbackAddress(value: string | undefined) {
+  return value === '127.0.0.1' || value === '::1' || value === '::ffff:127.0.0.1';
 }

@@ -18,8 +18,11 @@ import { PassThrough } from 'node:stream';
 import prism from 'prism-media';
 import type { AppConfig } from '../../config/env.js';
 import { LiveSessionManager, type LiveClientEvent } from '../../live/liveSession.js';
-import type { MemoryRepository } from '../../memory/repository.js';
-import type { PersonalityService } from '../../personality/service.js';
+import type { MemoryStore } from '../../memory/types.js';
+import type { PersonalityInstructionProvider } from '../../personality/service.js';
+import type { PlatformStore, UsageReservation } from '../../platform/store.js';
+import { voiceCredits } from '../../providers/routing.js';
+import type { PlanFeatures } from '../../platform/features.js';
 import type { MusicController, VoiceController } from '../../tools/registry.js';
 import { logger } from '../../logging/logger.js';
 
@@ -119,6 +122,10 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
   private readonly musicQueue: DiscordMusicQueueEntry[] = [];
   private readonly musicHistory: YoutubeTrack[] = [];
   private destroyed = false;
+  private usageReservation: UsageReservation | null = null;
+  private usageInputBaseline = 0;
+  private usageOutputBaseline = 0;
+  private voiceUsageAllowed = true;
   private diagnostics: VoiceBridgeDiagnostics = {
     attached: false,
     channelId: null,
@@ -163,8 +170,11 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     private readonly resolveSpeakerName: (userId: string) => string,
     private readonly leaveVoice: () => Promise<Record<string, unknown>>,
     private readonly config: AppConfig,
-    memory: MemoryRepository,
-    personality: PersonalityService
+    memory: MemoryStore,
+    personality: PersonalityInstructionProvider,
+    geminiApiKey: string | undefined,
+    private readonly usage?: { platform: PlatformStore; secondsPerCredit: number; reserveCredits: number },
+    planFeatures?: PlanFeatures
   ) {
     this.musicStatus = {
       state: 'idle',
@@ -197,12 +207,15 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     this.voiceChanger = new DiscordVoiceChanger(
       config.FFMPEG_BINARY,
       config.DISCORD_VOICE_CHANGER_CONFIG,
-      (pcm24k) => this.enqueueAssistantSpeech(pcm24k)
+      (pcm24k) => this.enqueueAssistantSpeech(pcm24k),
+      (config as AppConfig & { guildVoiceChanger?: VoiceChangerConfig }).guildVoiceChanger
     );
     this.live = new LiveSessionManager(config, memory, personality, {
       music: this,
       voice: this,
-      memoryTags: ['discord', guildId, voiceChannelId]
+      memoryTags: ['discord', guildId, voiceChannelId],
+      ...(geminiApiKey ? { geminiApiKey } : {}),
+      ...(planFeatures ? { toolEnabled: (name: string) => isVoiceToolEnabled(name, planFeatures) } : {})
     });
     this.live.setEmitter((event) => this.handleLiveEvent(event));
 
@@ -542,9 +555,21 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     this.diagnostics.geminiActivityStarts += 1;
     this.diagnostics.lastGeminiActivityStartAt = new Date().toISOString();
     this.inputQueue = this.inputQueue
-      .then(() => this.live.handleInput({
-        type: 'activityStart'
-      }, 'discord'))
+      .then(async () => {
+        if (this.usage && !this.usageReservation) {
+          this.usageReservation = await this.usage.platform.reserveUsage(
+            this.guildId,
+            `voice:${this.guildId}:${this.channelId}:${Date.now()}`,
+            'voice_credit',
+            this.usage.reserveCredits
+          );
+          this.voiceUsageAllowed = Boolean(this.usageReservation);
+          this.usageInputBaseline = this.diagnostics.geminiInputBytes;
+          this.usageOutputBaseline = this.diagnostics.geminiOutputBytes;
+        }
+        if (!this.voiceUsageAllowed) throw new Error('voice_credits_exhausted');
+        await this.live.handleInput({ type: 'activityStart' }, 'discord');
+      })
       .catch((error) => {
         this.recordError(error instanceof Error ? error.message : String(error));
         logger.warn('Failed to start Discord voice activity in Gemini Live', {
@@ -583,11 +608,11 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     });
     const data = pcm.toString('base64');
     this.inputQueue = this.inputQueue
-      .then(() => this.live.handleInput({
+      .then(() => this.voiceUsageAllowed ? this.live.handleInput({
         type: 'audio',
         data,
         mimeType: `audio/pcm;rate=${GEMINI_INPUT_RATE}`
-      }, 'discord'))
+      }, 'discord') : undefined)
       .catch((error) => {
         logger.warn('Failed to forward Discord voice audio to Gemini Live', {
           guildId: this.guildId,
@@ -598,6 +623,13 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
   }
 
   private handleLiveEvent(event: LiveClientEvent) {
+    if (event.type === 'avatar.state' && event.payload.state === 'idle' && this.usageReservation && this.usage) {
+      const reservation = this.usageReservation;
+      this.usageReservation = null;
+      const inputSeconds = Math.max(0, this.diagnostics.geminiInputBytes - this.usageInputBaseline) / (GEMINI_INPUT_RATE * 2);
+      const outputSeconds = Math.max(0, this.diagnostics.geminiOutputBytes - this.usageOutputBaseline) / (GEMINI_OUTPUT_RATE * 2);
+      void this.usage.platform.reconcileUsage(reservation, voiceCredits(inputSeconds, outputSeconds, this.usage.secondsPerCredit), true);
+    }
     if (event.type === 'avatar.state' && event.payload.state === 'listening') {
       this.mixer.clearAssistant();
       this.voiceChanger.reset();
@@ -1220,14 +1252,17 @@ class DiscordVoiceChanger {
   private outputBytes = 0;
   private lastError: string | null = null;
   private readonly configChangeHandler = () => this.reloadProfile();
+  private readonly watchesConfig: boolean;
 
   constructor(
     private readonly ffmpegBinary: string,
     private readonly configPath: string,
-    private readonly onAudio: (pcm24k: Buffer) => void
+    private readonly onAudio: (pcm24k: Buffer) => void,
+    profileOverride?: VoiceChangerConfig
   ) {
-    this.profile = loadVoiceChangerConfig(configPath);
-    watchFile(this.configPath, { interval: 1_000 }, this.configChangeHandler);
+    this.profile = profileOverride ?? loadVoiceChangerConfig(configPath);
+    this.watchesConfig = !profileOverride;
+    if (this.watchesConfig) watchFile(this.configPath, { interval: 1_000 }, this.configChangeHandler);
   }
 
   process(pcm24k: Buffer) {
@@ -1252,7 +1287,7 @@ class DiscordVoiceChanger {
 
   destroy() {
     this.destroyed = true;
-    unwatchFile(this.configPath, this.configChangeHandler);
+    if (this.watchesConfig) unwatchFile(this.configPath, this.configChangeHandler);
     this.stopProcessor();
   }
 
@@ -1353,6 +1388,12 @@ function loadVoiceChangerConfig(configPath: string): VoiceChangerConfig {
     });
     return { enabled: false, name: 'bypass', ffmpegFilter: 'anull' };
   }
+}
+
+function isVoiceToolEnabled(name: string, features: PlanFeatures) {
+  if (name === 'searchWeb') return features.webSearch;
+  if (['playSong', 'pauseMusic', 'resumeMusic', 'stopMusic', 'nextMusic', 'previousMusic', 'seekMusic', 'setMusicVolume', 'setMusicLoop', 'getMusicStatus'].includes(name)) return features.music;
+  return true;
 }
 
 class DiscordPcmMixer {

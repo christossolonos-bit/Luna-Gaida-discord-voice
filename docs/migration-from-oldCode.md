@@ -4,7 +4,7 @@ The previous implementation lives in `oldCode/` in this repository.
 
 Reused:
 
-- `.env` key names: `GEMINI_API_KEY`, `DISCORD_PUBLIC_KEY`, `DISCORD_APPLICATION_ID`, `DISCORD_BOT_TOKEN`.
+- Legacy `.env` key names included `GEMINI_API_KEY`; provider API keys are now stored encrypted in PostgreSQL and are not read from environment variables. Discord application credentials remain environment configuration.
 - VRM models except the old nude model, which is excluded from the default new asset set.
 - Mixamo animations: `Idle`, `Angry`, `Listening To Music`, `Sitting Idle`, `Spin In Place`.
 - Mixamo-to-VRM rig mapping.

@@ -40,7 +40,7 @@ interface DiscordAuthorizedUserRow {
 export class DiscordSettingsStore {
   private readonly db: Database.Database;
 
-  constructor(databasePath: string) {
+  constructor(databasePath: string, private readonly onChanged?: (settings: DiscordGuildSettings) => void) {
     const resolved = resolve(databasePath);
     mkdirSync(dirname(resolved), { recursive: true });
     this.db = new Database(resolved);
@@ -105,17 +105,20 @@ export class DiscordSettingsStore {
       ON CONFLICT(guild_id, channel_id) DO UPDATE SET updated_at = excluded.updated_at
     `).run(guildId, channelId, new Date().toISOString());
     this.upsertLegacy(guildId, { listeningChannelId: channelId });
+    this.onChanged?.(this.get(guildId));
   }
 
   removeListeningChannel(guildId: string, channelId: string) {
     this.db.prepare('DELETE FROM discord_listening_channels WHERE guild_id = ? AND channel_id = ?').run(guildId, channelId);
     const next = this.listListeningChannels(guildId)[0] ?? null;
     this.upsertLegacy(guildId, { listeningChannelId: next });
+    this.onChanged?.(this.get(guildId));
   }
 
   clearListeningChannels(guildId: string) {
     this.db.prepare('DELETE FROM discord_listening_channels WHERE guild_id = ?').run(guildId);
     this.upsertLegacy(guildId, { listeningChannelId: null });
+    this.onChanged?.(this.get(guildId));
   }
 
   addVoiceWatchChannel(guildId: string, channelId: string) {
@@ -125,17 +128,20 @@ export class DiscordSettingsStore {
       ON CONFLICT(guild_id, channel_id) DO UPDATE SET updated_at = excluded.updated_at
     `).run(guildId, channelId, new Date().toISOString());
     this.upsertLegacy(guildId, { voiceWatchChannelId: channelId });
+    this.onChanged?.(this.get(guildId));
   }
 
   removeVoiceWatchChannel(guildId: string, channelId: string) {
     this.db.prepare('DELETE FROM discord_voice_watch_channels WHERE guild_id = ? AND channel_id = ?').run(guildId, channelId);
     const next = this.listVoiceWatchChannels(guildId)[0] ?? null;
     this.upsertLegacy(guildId, { voiceWatchChannelId: next });
+    this.onChanged?.(this.get(guildId));
   }
 
   clearVoiceWatchChannels(guildId: string) {
     this.db.prepare('DELETE FROM discord_voice_watch_channels WHERE guild_id = ?').run(guildId);
     this.upsertLegacy(guildId, { voiceWatchChannelId: null });
+    this.onChanged?.(this.get(guildId));
   }
 
   listListeningChannels(guildId: string) {

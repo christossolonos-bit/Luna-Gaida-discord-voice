@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync, unwatchFile, watchFile } from 'node:fs';
 import { logger } from '../logging/logger.js';
 
-interface VoiceChangerConfig {
+export interface VoiceChangerConfig {
   enabled: boolean;
   name: string;
   ffmpegFilter: string;
@@ -15,15 +15,18 @@ export class OutputVoiceChanger {
   private destroyed = false;
   private stderr = '';
   private readonly configChangeHandler = () => this.reloadProfile();
+  private readonly watchesConfig: boolean;
 
   constructor(
     private readonly ffmpegBinary: string,
     private readonly configPath: string,
     private readonly sampleRate: number,
-    private readonly onAudio: (pcm: Buffer) => void
+    private readonly onAudio: (pcm: Buffer) => void,
+    profileOverride?: VoiceChangerConfig
   ) {
-    this.profile = loadVoiceChangerConfig(configPath);
-    watchFile(this.configPath, { interval: 1_000 }, this.configChangeHandler);
+    this.profile = profileOverride ?? loadVoiceChangerConfig(configPath);
+    this.watchesConfig = !profileOverride;
+    if (this.watchesConfig) watchFile(this.configPath, { interval: 1_000 }, this.configChangeHandler);
   }
 
   process(pcm: Buffer) {
@@ -47,7 +50,7 @@ export class OutputVoiceChanger {
 
   destroy() {
     this.destroyed = true;
-    unwatchFile(this.configPath, this.configChangeHandler);
+    if (this.watchesConfig) unwatchFile(this.configPath, this.configChangeHandler);
     this.stopProcessor();
   }
 

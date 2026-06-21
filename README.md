@@ -51,7 +51,21 @@ npm run tauri:dev --workspace @giada/desktop
 
 ## Docker Compose
 
-The Docker setup runs the backend and a private SearXNG instance for the `searchWeb` tool. SearXNG is not published to the host; only the Giada backend can reach it through the Compose network at `http://searxng:8080`.
+The Docker setup runs the backend, PostgreSQL, the web dashboard, and a private SearXNG instance for the `searchWeb` tool. PostgreSQL is authoritative for guild settings, plans, encrypted credentials, subscriptions, scoped memory, and usage. The legacy SQLite file remains only for local desktop compatibility during migration.
+
+Before starting, set `GIADA_MASTER_KEY`, Discord OAuth values, `GIADA_OWNER_DISCORD_USER_ID`, Stripe values, and a non-default `POSTGRES_PASSWORD` in `.env.docker`. Generate the master key with `openssl rand -base64 32`. Configure the Discord OAuth callback as `https://YOUR_HOST/api/auth/discord/callback` and the Stripe webhook as `https://YOUR_HOST/api/billing/webhook`.
+
+The dashboard is served at the backend origin. Free guilds can manage settings, paid guilds can additionally use browser chat, and only `GIADA_OWNER_DISCORD_USER_ID` can manage plans, shared provider keys, usage, and Private guild assignments.
+
+LLM API keys are never loaded from environment variables. After the first owner login, open **Administration → Shared provider keys** and add one or more Groq keys, Gemini Live paid/private keys, and an NVIDIA NIM key. They are encrypted before being stored in PostgreSQL. Guild BYOK credentials are managed separately under each guild's **Providers** page.
+
+After configuring PostgreSQL, copy existing SQLite memories into the isolated owner scope once with:
+
+```bash
+npm run migrate:legacy --workspace @giada/server
+```
+
+The migration is idempotent by legacy memory ID. Existing Discord memories are deliberately not assigned to any guild because the old schema did not reliably record guild ownership.
 
 Build the backend image:
 

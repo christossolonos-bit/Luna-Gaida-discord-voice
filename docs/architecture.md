@@ -25,6 +25,8 @@ Backend:
 - stores memory/personality in SQLite
 - enforces privacy classes
 - hosts plugin modules such as Discord
+- serves the authenticated React management dashboard
+- keeps PostgreSQL as the authority for guild configuration, plans, subscriptions, encrypted BYOK credentials, scoped memory, and usage ledgers
 
 ## Module Map
 
@@ -35,6 +37,10 @@ Backend:
 - `apps/server/src/tools`: Live API tool declarations and handlers.
 - `apps/server/src/plugins`: addon/plugin interface.
 - `apps/server/src/plugins/discord`: Discord text/voice foundation.
+- `apps/server/src/platform`: PostgreSQL schema, plan entitlements, encryption, subscriptions, and transactional usage accounting.
+- `apps/server/src/providers`: per-guild provider routing and Groq key rotation.
+- `apps/server/src/web`: Discord OAuth, Stripe, guild, and owner administration APIs.
+- `apps/web`: browser dashboard and paid browser chat surface.
 - `apps/server/src/ws`: desktop realtime bridge.
 - `apps/desktop/src/components`: React UI and VRM stage.
 - `apps/desktop/src/lib`: realtime, audio, permissions, VRM helpers.

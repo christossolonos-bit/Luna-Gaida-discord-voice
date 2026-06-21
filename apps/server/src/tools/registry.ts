@@ -1,10 +1,10 @@
 import { z } from 'zod';
-import type { MemoryRepository } from '../memory/repository.js';
+import type { MemoryStore } from '../memory/types.js';
 import { classifyText } from '../policy/privacy.js';
 
 export interface ToolContext {
   surface: 'desktop' | 'discord' | 'browser';
-  memory: MemoryRepository;
+  memory: MemoryStore;
   emitClientEvent?: (event: unknown) => void;
   music?: MusicController;
   voice?: VoiceController;
@@ -140,7 +140,7 @@ export function createToolRegistry(options: ToolRegistryOptions = {}): Registere
           privacy,
           source: context.surface === 'browser' ? 'desktop' : context.surface
         };
-        const record = context.memory.write(parsed.tags ? { ...writeInput, tags: parsed.tags } : writeInput);
+        const record = await context.memory.write(parsed.tags ? { ...writeInput, tags: parsed.tags } : writeInput);
         return { id: record.id, privacy: record.privacy };
       }
     },
@@ -156,7 +156,7 @@ export function createToolRegistry(options: ToolRegistryOptions = {}): Registere
       },
       async run(args, context) {
         const query = z.object({ query: z.string().min(1).max(500) }).parse(args).query;
-        const records = context.memory.search(query, {
+        const records = await context.memory.search(query, {
           allowPrivate: context.surface !== 'discord',
           limit: 8
         });

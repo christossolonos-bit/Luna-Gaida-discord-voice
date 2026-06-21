@@ -11,6 +11,7 @@ services:
       GIADA_SERVER_HOST: 0.0.0.0
       GIADA_SERVER_PORT: 8787
       GIADA_DATABASE_URL: file:/app/data/giada.sqlite
+      GIADA_POSTGRES_URL: postgresql://giada:${POSTGRES_PASSWORD:-giada-local-change-me}@postgres:5432/giada
       SEARXNG_URL: http://searxng:8080
       FFMPEG_BINARY: ffmpeg
       YTDLP_BINARY: yt-dlp
@@ -23,10 +24,27 @@ services:
       - ./secrets:/run/secrets:ro
       - giada_config:/app/config:ro
     depends_on:
+      postgres:
+        condition: service_healthy
       searxng:
         condition: service_started
       bgutil-provider:
         condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: giada
+      POSTGRES_USER: giada
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-giada-local-change-me}
+    volumes:
+      - giada_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U giada -d giada"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   bgutil-provider:
     image: brainicism/bgutil-ytdlp-pot-provider:latest
@@ -64,3 +82,4 @@ volumes:
   giada_data:
   giada_config:
   searxng_cache:
+  giada_postgres:

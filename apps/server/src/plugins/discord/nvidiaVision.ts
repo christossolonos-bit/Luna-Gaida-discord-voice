@@ -3,6 +3,8 @@ import { logger } from '../../logging/logger.js';
 import type { Part } from '@google/genai';
 import type { DiscordImageAttachment } from './responder.js';
 
+type NvidiaConfig = AppConfig & { nvidiaApiKey?: string };
+
 interface NvidiaChatCompletionResponse {
   choices?: Array<{
     message?: {
@@ -36,12 +38,12 @@ const NVIDIA_MAX_ATTEMPTS = 4;
 const NVIDIA_MAX_RETRY_DELAY_MS = 60_000;
 
 export async function describeDiscordImages(
-  config: AppConfig,
+  config: NvidiaConfig,
   images: DiscordImageAttachment[],
   nsfwAllowed: boolean
 ) {
-  if (!config.NVIDIA_API_KEY) {
-    throw new Error('NVIDIA_API_KEY is required to analyze Discord images');
+  if (!config.nvidiaApiKey) {
+    throw new Error('An NVIDIA NIM credential is required to analyze Discord images');
   }
 
   const content: Array<Record<string, unknown>> = [{
@@ -84,7 +86,7 @@ export async function describeDiscordImages(
   const response = await fetchNvidiaWithRetry(config.NVIDIA_NIM_URL, () => ({
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${config.NVIDIA_API_KEY}`,
+      Authorization: `Bearer ${config.nvidiaApiKey}`,
       Accept: 'application/json',
       'Content-Type': 'application/json'
     },
@@ -118,14 +120,14 @@ export async function describeDiscordImages(
 }
 
 export async function generateDiscordTextWithNvidia(
-  config: AppConfig,
+  config: NvidiaConfig,
   systemInstruction: string,
   parts: Part[],
   nsfwAllowed: boolean,
   tools?: NvidiaFallbackTools
 ) {
-  if (!config.NVIDIA_API_KEY) {
-    throw new Error('NVIDIA_API_KEY is required for the Discord text fallback');
+  if (!config.nvidiaApiKey) {
+    throw new Error('An NVIDIA NIM credential is required for the text fallback');
   }
   if (parts.some((part) => part.inlineData)) {
     throw new Error('NVIDIA Discord text fallback must not receive inline media');
@@ -153,7 +155,7 @@ export async function generateDiscordTextWithNvidia(
     const response = await fetchNvidiaWithRetry(config.NVIDIA_NIM_URL, () => ({
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${config.NVIDIA_API_KEY}`,
+        Authorization: `Bearer ${config.nvidiaApiKey}`,
         Accept: 'application/json',
         'Content-Type': 'application/json'
       },

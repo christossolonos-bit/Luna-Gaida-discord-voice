@@ -20,12 +20,21 @@ for (const path of [...new Set(envCandidates)].filter((candidate) => existsSync(
 }
 
 const envSchema = z.object({
-  GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default('gemini-live-2.5-flash-native-audio'),
   GEMINI_API_VERSION: z.string().default('v1alpha'),
-  NVIDIA_API_KEY: z.string().optional(),
   NVIDIA_NIM_URL: z.string().url().default('https://integrate.api.nvidia.com/v1/chat/completions'),
   NVIDIA_IMAGE_MODEL: z.string().default('moonshotai/kimi-k2.6'),
+  GROQ_API_URL: z.string().url().default('https://api.groq.com/openai/v1/chat/completions'),
+  GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
+  GIADA_POSTGRES_URL: z.string().url().optional(),
+  GIADA_MASTER_KEY: z.string().optional(),
+  GIADA_PUBLIC_URL: z.string().url().default('http://127.0.0.1:8787'),
+  GIADA_WEB_DIST: z.string().default('./apps/web/dist'),
+  GIADA_UPLOAD_DIR: z.string().default('./data/uploads'),
+  GIADA_OWNER_DISCORD_USER_ID: z.string().optional(),
+  DISCORD_CLIENT_SECRET: z.string().optional(),
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
   GIADA_SERVER_HOST: z.string().default('127.0.0.1'),
   GIADA_SERVER_PORT: z.coerce.number().int().positive().default(8787),
   GIADA_DATABASE_URL: z.string().default('file:./data/giada.sqlite'),
@@ -69,7 +78,9 @@ export function loadConfig() {
     allowedOrigins: parsed.GIADA_ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean),
     databasePath: parsed.GIADA_DATABASE_URL.startsWith('file:')
       ? parsed.GIADA_DATABASE_URL.slice('file:'.length)
-      : parsed.GIADA_DATABASE_URL
+      : parsed.GIADA_DATABASE_URL,
+    webDistPath: resolveProjectFile(parsed.GIADA_WEB_DIST),
+    uploadDir: resolveProjectFile(parsed.GIADA_UPLOAD_DIR)
   };
 }
 

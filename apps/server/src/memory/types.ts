@@ -20,3 +20,9 @@ export interface MemoryWriteInput {
   privacy: PrivacyClass;
   retentionDays?: number | null;
 }
+
+export interface MemoryStore {
+  write(input: MemoryWriteInput): MemoryRecord | Promise<MemoryRecord>;
+  search(query: string, options: { allowPrivate: boolean; limit?: number }): MemoryRecord[] | Promise<MemoryRecord[]>;
+  listForContext(surface: 'desktop' | 'discord' | 'browser', limit?: number, tags?: string[]): MemoryRecord[] | Promise<MemoryRecord[]>;
+}

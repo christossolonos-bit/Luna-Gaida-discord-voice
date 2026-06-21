@@ -25,8 +25,10 @@ import {
 import { createPublicKey, verify } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AppConfig } from '../../config/env.js';
-import type { MemoryRepository } from '../../memory/repository.js';
-import type { PersonalityService } from '../../personality/service.js';
+import type { MemoryStore } from '../../memory/types.js';
+import { buildPersonalityInstruction, type PersonalityInstructionProvider, type PersonalityService } from '../../personality/service.js';
+import type { PlatformStore } from '../../platform/store.js';
+import { personalityProfileForRuntime } from '../../platform/store.js';
 import { assertDiscordSafe, sanitizeForDiscord } from '../../policy/privacy.js';
 import type { GiadaPlugin } from '../plugin.js';
 import { logger } from '../../logging/logger.js';
@@ -42,7 +44,6 @@ import { DiscordVoiceBridge } from './voiceBridge.js';
 
 const MAX_DISCORD_IMAGE_ATTACHMENTS = 4;
 const MAX_DISCORD_IMAGE_BYTES = 8 * 1024 * 1024;
-const DISCORD_COMMAND_OWNER_USER_ID = '573903151472836609';
 const VOICE_WATCH_RECONCILE_MS = 15_000;
 const VOICE_READY_TIMEOUT_MS = 30_000;
 const VOICE_REJOIN_DELAY_MS = 3_000;
@@ -193,18 +194,32 @@ export class DiscordPlugin implements GiadaPlugin {
   private readonly voiceConnectionDiagnostics = new Map<string, DiscordVoiceConnectionDiagnostics>();
   private readonly diagnosedVoiceConnections = new WeakSet<ReturnType<typeof joinVoiceChannel>>();
   private readonly activeVoiceAdapters = new Map<string, ActiveVoiceAdapter>();
+  private readonly appliedIdentitySignatures = new Map<string, string>();
 
   constructor(
     private readonly config: AppConfig,
-    private readonly memory: MemoryRepository,
-    private readonly personality: PersonalityService
+    private readonly memory: MemoryStore,
+    private readonly personality: PersonalityService,
+    private readonly platform?: PlatformStore
   ) {
-    this.settings = new DiscordSettingsStore(config.databasePath);
+    this.settings = new DiscordSettingsStore(config.databasePath, platform ? (settings) => {
+      void platform.getGuildRuntime(settings.guildId).then((runtime) => platform.updateGuildConfig(settings.guildId, {
+        settings: {
+          ...runtime.settings,
+          listeningChannelIds: settings.listeningChannelIds,
+          voiceWatchChannelIds: settings.voiceWatchChannelIds
+        }
+      }, 'discord-command')).catch((error) => logger.warn('Could not persist Discord channel settings to PostgreSQL', {
+        guildId: settings.guildId,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+    } : undefined);
     this.responder = new DiscordTextResponder(
       config,
       memory,
       personality,
-      (guildId, channelId) => this.getMusicControllerForChannel(guildId, channelId)
+      (guildId, channelId) => this.getMusicControllerForChannel(guildId, channelId),
+      platform
     );
   }
 
@@ -310,12 +325,14 @@ export class DiscordPlugin implements GiadaPlugin {
         });
       }
       void this.registerCommands();
+      void this.synchronizePlatformGuilds();
       void this.restoreWatchedVoiceConnections();
       void this.initializeWatchedTextSessions();
       this.startVoiceWatchReconciliation();
     });
     this.client.on(Events.GuildCreate, (guild) => {
       void this.registerCommands();
+      void this.synchronizePlatformGuild(guild.id);
       void this.initializeWatchedTextSessions(guild.id);
     });
 
@@ -327,6 +344,54 @@ export class DiscordPlugin implements GiadaPlugin {
       this.client = null;
       logger.error('Discord plugin disabled: login failed. Check DISCORD_BOT_TOKEN.', error instanceof Error ? error.message : String(error));
     }
+  }
+
+  private async synchronizePlatformGuilds() {
+    if (!this.platform) return;
+    await Promise.all([...this.client?.guilds.cache.keys() ?? []].map((guildId) => this.synchronizePlatformGuild(guildId)));
+  }
+
+  private async synchronizePlatformGuild(guildId: string) {
+    if (!this.platform) return;
+    const guild = this.client?.guilds.cache.get(guildId);
+    if (!guild) return;
+    await this.platform.ensureGuild({ id: guild.id, name: guild.name, icon: guild.icon });
+    const runtime = await this.platform.getGuildRuntime(guild.id);
+    const localChannels = this.settings.get(guild.id);
+    if (JSON.stringify([...localChannels.listeningChannelIds].sort()) !== JSON.stringify([...runtime.settings.listeningChannelIds].sort())) {
+      this.settings.clearListeningChannels(guild.id);
+      for (const channelId of runtime.settings.listeningChannelIds) this.settings.addListeningChannel(guild.id, channelId);
+    }
+    if (JSON.stringify([...localChannels.voiceWatchChannelIds].sort()) !== JSON.stringify([...runtime.settings.voiceWatchChannelIds].sort())) {
+      this.settings.clearVoiceWatchChannels(guild.id);
+      for (const channelId of runtime.settings.voiceWatchChannelIds) this.settings.addVoiceWatchChannel(guild.id, channelId);
+    }
+    const me = await guild.members.fetchMe().catch(() => null);
+    if (!me) return;
+    const effectiveNickname = runtime.features.customIdentity ? runtime.settings.nickname : null;
+    const effectiveAvatarUrl = runtime.features.customIdentity ? runtime.settings.avatarUrl : null;
+    const identitySignature = JSON.stringify([effectiveNickname, effectiveAvatarUrl]);
+    if (this.appliedIdentitySignatures.get(guildId) === identitySignature) return;
+    const patch: { nick?: string | null; avatar?: Buffer | null } = {};
+    let avatarLoadFailed = false;
+    if ((me.nickname ?? null) !== effectiveNickname) patch.nick = effectiveNickname;
+    if (effectiveAvatarUrl) {
+      const avatar = await fetchRemoteAvatar(effectiveAvatarUrl, this.config.GIADA_PUBLIC_URL).catch(() => null);
+      if (avatar) patch.avatar = avatar;
+      else avatarLoadFailed = true;
+    } else if (me.avatar) patch.avatar = null;
+    if (avatarLoadFailed) return;
+    if (Object.keys(patch).length) {
+      const applied = await guild.members.editMe(patch).then(() => true).catch((error) => {
+        logger.warn('Could not apply per-guild bot identity', {
+        guildId,
+        error: error instanceof Error ? error.message : String(error)
+        });
+        return false;
+      });
+      if (!applied) return;
+    }
+    this.appliedIdentitySignatures.set(guildId, identitySignature);
   }
 
   async stop() {
@@ -455,8 +520,11 @@ export class DiscordPlugin implements GiadaPlugin {
       return;
     }
     const guildId = message.guildId;
+    if (this.platform && message.guild) {
+      await this.platform.ensureGuild({ id: message.guild.id, name: message.guild.name, icon: message.guild.icon });
+    }
 
-    const addressed = this.isAddressed(message);
+    const addressed = await this.isAddressed(message);
     const voiceTextBridge = this.getConnectedVoiceTextBridge(message);
     if (voiceTextBridge) {
       if (this.hasSeenVoiceTextMessage(message.id)) {
@@ -644,7 +712,7 @@ export class DiscordPlugin implements GiadaPlugin {
 
     if (subcommand === 'deauthorize') {
       const user = interaction.options.getUser('user', true);
-      if (user.id === DISCORD_COMMAND_OWNER_USER_ID) {
+      if (this.isOwnerUser(user.id)) {
         await this.replyInteraction(interaction, 'The Giada owner cannot be deauthorized.');
         return;
       }
@@ -759,7 +827,7 @@ export class DiscordPlugin implements GiadaPlugin {
         await this.updateHttpInteraction(payload, 'Choose a user to deauthorize.');
         return;
       }
-      if (targetUserId === DISCORD_COMMAND_OWNER_USER_ID) {
+      if (this.isOwnerUser(targetUserId)) {
         await this.updateHttpInteraction(payload, 'The Giada owner cannot be deauthorized.');
         return;
       }
@@ -1003,6 +1071,7 @@ export class DiscordPlugin implements GiadaPlugin {
       logger.warn('Cannot join Discord voice channel because bot user is not ready', { guildId, channelId });
       return;
     }
+    const voiceBridge = await this.getVoiceBridge(guildId, channelId, botUserId);
     await guild.members.fetchMe().catch((error) => {
       logger.warn('Could not fetch Discord bot guild member before joining voice', {
         guildId,
@@ -1017,7 +1086,7 @@ export class DiscordPlugin implements GiadaPlugin {
         this.destroyVoiceBridge(guildId, channelId);
       } else {
         this.attachVoiceConnectionDiagnostics(guildId, channelId, existingConnection);
-        this.getVoiceBridge(guildId, channelId, botUserId).attach(existingConnection, channelId);
+        voiceBridge.attach(existingConnection, channelId);
         this.watchVoiceReady(guildId, channelId, existingConnection);
         this.unsuppressStageVoiceIfNeeded(guildId, channelId);
         return;
@@ -1038,7 +1107,7 @@ export class DiscordPlugin implements GiadaPlugin {
       debug: true
     });
     this.attachVoiceConnectionDiagnostics(guildId, channelId, connection);
-    this.getVoiceBridge(guildId, channelId, botUserId).attach(connection, channelId);
+    voiceBridge.attach(connection, channelId);
     this.watchVoiceReady(guildId, channelId, connection);
     this.unsuppressStageVoiceIfNeeded(guildId, channelId);
   }
@@ -1331,6 +1400,7 @@ export class DiscordPlugin implements GiadaPlugin {
 
   private async reconcileWatchedVoiceConnections() {
     for (const guild of this.client?.guilds.cache.values() ?? []) {
+      await this.synchronizePlatformGuild(guild.id);
       for (const channelId of this.settings.get(guild.id).voiceWatchChannelIds) {
         await this.joinWatchedVoiceIfNeeded(guild.id, channelId);
         this.leaveWatchedVoiceIfEmpty(guild.id, channelId);
@@ -1338,19 +1408,64 @@ export class DiscordPlugin implements GiadaPlugin {
     }
   }
 
-  private getVoiceBridge(guildId: string, channelId: string, botUserId: string) {
+  private async getVoiceBridge(guildId: string, channelId: string, botUserId: string) {
     const key = voiceBridgeKey(guildId, channelId);
     let bridge = this.voiceBridges.get(key);
     if (!bridge) {
+      let liveConfig = this.config;
+      let personalityProvider: PersonalityInstructionProvider = this.personality;
+      let geminiApiKey: string | undefined;
+      let usage: { platform: PlatformStore; secondsPerCredit: number; reserveCredits: number } | undefined;
+      let planFeatures: Awaited<ReturnType<PlatformStore['getGuildRuntime']>>['features'] | undefined;
+      if (this.platform) {
+        const runtime = await this.platform.getGuildRuntime(guildId);
+        planFeatures = runtime.features;
+        const byok = runtime.features.byokGemini ? await this.platform.getCredential(guildId, 'gemini') : null;
+        let apiKey = byok;
+        if (!apiKey && runtime.planKind === 'private' && runtime.features.geminiVoice) apiKey = (await this.platform.pickProviderKey('gemini_private'))?.value ?? null;
+        if (!apiKey && runtime.planKind === 'paid' && runtime.features.geminiVoice) {
+          const currentUsage = await this.platform.getUsage(guildId);
+          const remaining = currentUsage.unlimited ? Number.MAX_SAFE_INTEGER : currentUsage.creditLimit - currentUsage.creditsUsed;
+          if (remaining <= 0) throw new Error('voice_credits_exhausted');
+          apiKey = (await this.platform.pickProviderKey('gemini_paid'))?.value ?? null;
+          if (apiKey) usage = {
+            platform: this.platform,
+            secondsPerCredit: runtime.features.voiceSecondsPerCredit,
+            reserveCredits: Math.max(1, Math.min(remaining, Math.ceil(240 / runtime.features.voiceSecondsPerCredit)))
+          };
+        }
+        if (!apiKey || !runtime.features.geminiVoice) throw new Error('voice_not_enabled_for_plan');
+        geminiApiKey = apiKey;
+        liveConfig = {
+          ...this.config,
+          DISCORD_MUSIC_VOLUME: runtime.settings.musicVolume,
+          DISCORD_MUSIC_DUCK_VOLUME: runtime.settings.musicDuckVolume,
+          guildVoiceChanger: {
+            ...runtime.settings.voiceChanger,
+            enabled: runtime.features.voiceChanger && runtime.settings.voiceChanger.enabled
+          }
+        } as AppConfig;
+        const effectivePersonality = personalityProfileForRuntime(runtime);
+        personalityProvider = {
+          buildInstruction: (surface, options) => buildPersonalityInstruction(
+            effectivePersonality.profile,
+            surface,
+            { ...options, customInstructions: effectivePersonality.customInstructions }
+          )
+        };
+      }
       bridge = new DiscordVoiceBridge(
         guildId,
         channelId,
         botUserId,
         (userId) => this.resolveVoiceSpeakerName(guildId, userId),
         () => this.leaveVoiceFromTool(guildId, channelId),
-        this.config,
-        this.memory,
-        this.personality
+        liveConfig,
+        this.platform?.guildMemory(guildId) ?? this.memory,
+        personalityProvider,
+        geminiApiKey,
+        usage,
+        planFeatures
       );
       this.voiceBridges.set(key, bridge);
     }
@@ -1445,10 +1560,13 @@ export class DiscordPlugin implements GiadaPlugin {
     }, 1000);
   }
 
-  private isAddressed(message: Message) {
+  private async isAddressed(message: Message) {
     const botUser = this.client?.user;
-    const name = this.personality.get().name.toLowerCase();
-    return Boolean(botUser && message.mentions.has(botUser)) || message.content.toLowerCase().includes(name);
+    const names = this.platform && message.guildId
+      ? await this.platform.getGuildRuntime(message.guildId).then((runtime) => [runtime.personality.name, runtime.settings.nickname].filter(Boolean) as string[])
+      : [this.personality.get().name];
+    const content = message.content.toLowerCase();
+    return Boolean(botUser && message.mentions.has(botUser)) || names.some((name) => content.includes(name.toLowerCase()));
   }
 
   private async initializeWatchedTextSessions(onlyGuildId?: string) {
@@ -1689,7 +1807,7 @@ export class DiscordPlugin implements GiadaPlugin {
   }
 
   private hasGatewayAdminOrOwner(interaction: ChatInputCommandInteraction) {
-    return interaction.user.id === DISCORD_COMMAND_OWNER_USER_ID
+    return this.isOwnerUser(interaction.user.id)
       || Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
   }
 
@@ -1754,7 +1872,7 @@ export class DiscordPlugin implements GiadaPlugin {
       `Listening channels: ${settings.listeningChannelIds.length ? settings.listeningChannelIds.map((channelId) => `<#${channelId}>`).join(', ') : 'off'}`,
       `Voice watch channels: ${settings.voiceWatchChannelIds.length ? settings.voiceWatchChannelIds.map((channelId) => `<#${channelId}>`).join(', ') : 'off'}`,
       `Authorized command user IDs: ${authorizedUsers.length ? authorizedUsers.map((user) => user.userId).join(', ') : 'none'}`,
-      `Owner bypass user ID: ${DISCORD_COMMAND_OWNER_USER_ID}`
+      `Owner bypass user ID: ${this.config.GIADA_OWNER_DISCORD_USER_ID ?? 'not configured'}`
     ].join('\n');
   }
 
@@ -1783,7 +1901,7 @@ export class DiscordPlugin implements GiadaPlugin {
 
   private hasHttpAdminOrOwner(payload: DiscordHttpInteraction) {
     const userId = payload.member?.user?.id ?? payload.user?.id;
-    if (userId === DISCORD_COMMAND_OWNER_USER_ID) {
+    if (userId && this.isOwnerUser(userId)) {
       return true;
     }
     const permissions = payload.member?.permissions;
@@ -1795,6 +1913,10 @@ export class DiscordPlugin implements GiadaPlugin {
     } catch {
       return false;
     }
+  }
+
+  private isOwnerUser(userId: string) {
+    return Boolean(this.config.GIADA_OWNER_DISCORD_USER_ID && userId === this.config.GIADA_OWNER_DISCORD_USER_ID);
   }
 
   private verifyHttpInteraction(req: IncomingMessage, rawBody: Buffer) {
@@ -2061,6 +2183,31 @@ function discordRegistrationToken(config: AppConfig) {
     return bearerToken;
   }
   return null;
+}
+
+async function fetchRemoteAvatar(value: string, publicUrl: string) {
+  const url = new URL(value);
+  const isOwnOrigin = url.origin === new URL(publicUrl).origin;
+  if (!isOwnOrigin && (url.protocol !== 'https:' || isPrivateHostname(url.hostname))) throw new Error('Avatar URL must use public HTTPS');
+  const response = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: 'error' });
+  const length = Number(response.headers.get('content-length') ?? 0);
+  const type = response.headers.get('content-type') ?? '';
+  if (!response.ok || !type.startsWith('image/') || length > 8 * 1024 * 1024) throw new Error('Invalid avatar response');
+  const data = Buffer.from(await response.arrayBuffer());
+  if (!data.length || data.length > 8 * 1024 * 1024) throw new Error('Avatar must be at most 8 MiB');
+  return data;
+}
+
+function isPrivateHostname(hostname: string) {
+  const normalized = hostname.toLowerCase();
+  if (normalized === 'localhost' || normalized.endsWith('.local') || normalized === '::1') return true;
+  const parts = normalized.split('.').map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) return false;
+  return parts[0] === 10
+    || parts[0] === 127
+    || (parts[0] === 169 && parts[1] === 254)
+    || (parts[0] === 172 && (parts[1] ?? 0) >= 16 && (parts[1] ?? 0) <= 31)
+    || (parts[0] === 192 && parts[1] === 168);
 }
 
 export function isUsableDiscordToken(token: string | undefined) {
