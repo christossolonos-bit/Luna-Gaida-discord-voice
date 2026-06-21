@@ -27,6 +27,7 @@ export interface RealtimeSession {
   handleInput(input: LiveInputEvent, surface?: LiveSurface): Promise<void>;
   close(): void;
   dispose(): void;
+  setVoiceChangerProfile?(profile: { enabled: boolean; name: string; ffmpegFilter: string }): void;
 }
 
 export function attachRealtimeServer(

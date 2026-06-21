@@ -68,6 +68,7 @@ export class LiveSessionManager {
   private screenShareActive = false;
   private latestScreenFrame: { data: string; mimeType: string; receivedAt: number } | null = null;
   private outputVoiceChanger: OutputVoiceChanger | null = null;
+  private voiceChangerProfile: import('./outputVoiceChanger.js').VoiceChangerConfig | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -83,6 +84,7 @@ export class LiveSessionManager {
       geminiApiKey?: string;
     } = {}
   ) {
+    this.voiceChangerProfile = (config as AppConfig & { guildVoiceChanger?: import('./outputVoiceChanger.js').VoiceChangerConfig }).guildVoiceChanger;
     this.ai = toolContextProviders.geminiApiKey
       ? new GoogleGenAI({ apiKey: toolContextProviders.geminiApiKey, httpOptions: { apiVersion: config.GEMINI_API_VERSION } })
       : null;
@@ -224,6 +226,11 @@ export class LiveSessionManager {
     this.close();
     this.outputVoiceChanger?.destroy();
     this.outputVoiceChanger = null;
+  }
+
+  setVoiceChangerProfile(profile: import('./outputVoiceChanger.js').VoiceChangerConfig) {
+    this.voiceChangerProfile = profile;
+    this.outputVoiceChanger?.updateProfile(profile);
   }
 
   private async handleTextInput(text: string, surface: LiveSurface) {
@@ -671,7 +678,7 @@ export class LiveSessionManager {
           data: pcm.toString('base64'),
           mimeType: 'audio/pcm;rate=24000'
         }),
-        (this.config as AppConfig & { guildVoiceChanger?: import('./outputVoiceChanger.js').VoiceChangerConfig }).guildVoiceChanger
+        this.voiceChangerProfile
       );
     }
     return this.outputVoiceChanger;

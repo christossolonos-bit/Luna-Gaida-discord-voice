@@ -24,20 +24,22 @@ export class BrowserRealtimeSession implements RealtimeSession {
 
   setEmitter(emit: (event: LiveClientEvent) => void) {
     this.emit = emit;
-    this.gemini?.setEmitter(emit);
+    this.gemini?.setEmitter((event) => {
+      if (event.type !== 'status') emit(event);
+    });
   }
 
   emitCurrentStatus() {
-    if (this.gemini) this.gemini.emitCurrentStatus();
-    else this.emit?.({ type: 'status', status: 'connected' });
+    this.emit?.({ type: 'status', status: 'connected' });
   }
 
   async connect(surface: LiveSurface = 'browser') {
+    this.emit?.({ type: 'status', status: 'connected' });
     if (this.gemini) await this.gemini.connect(surface);
-    else this.emit?.({ type: 'status', status: 'connected' });
   }
 
   async handleInput(input: LiveInputEvent, surface: LiveSurface = 'browser') {
+    if (input.type === 'text' || input.type === 'activityStart') await this.refreshVoiceChanger();
     if (input.type !== 'text' || !input.text?.trim()) {
       if (!this.gemini) throw new Error('browser_voice_not_available');
       return this.gemini.handleInput(input, surface);
@@ -109,6 +111,15 @@ export class BrowserRealtimeSession implements RealtimeSession {
 
   close() { this.gemini?.close(); }
   dispose() { this.gemini?.dispose(); }
+
+  private async refreshVoiceChanger() {
+    if (!this.gemini?.setVoiceChangerProfile) return;
+    const runtime = await this.store.getGuildRuntime(this.guildId);
+    this.gemini.setVoiceChangerProfile({
+      ...runtime.settings.voiceChanger,
+      enabled: runtime.features.voiceChanger && runtime.settings.voiceChanger.enabled
+    });
+  }
 }
 
 function parseArguments(value: string) {

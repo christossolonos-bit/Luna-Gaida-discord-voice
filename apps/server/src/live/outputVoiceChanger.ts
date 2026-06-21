@@ -48,6 +48,13 @@ export class OutputVoiceChanger {
     this.stopProcessor();
   }
 
+  updateProfile(profile: VoiceChangerConfig) {
+    if (profile.enabled === this.profile.enabled && profile.name === this.profile.name && profile.ffmpegFilter === this.profile.ffmpegFilter) return;
+    this.stopProcessor();
+    this.profile = profile;
+    this.available = true;
+  }
+
   destroy() {
     this.destroyed = true;
     if (this.watchesConfig) unwatchFile(this.configPath, this.configChangeHandler);
