@@ -151,12 +151,12 @@ export class PlatformStore {
   }
 
   async ensureGuild(input: { id: string; name: string; icon?: string | null }) {
-    const free = await this.getPlanBySlug('free');
+    const free = await this.findPlanBySlug('free');
     await this.database.db.insert(guilds).values({
       id: input.id,
       name: input.name,
       icon: input.icon ?? null,
-      planId: free.id
+      planId: free?.id ?? null
     }).onConflictDoUpdate({ target: guilds.id, set: { name: input.name, icon: input.icon ?? null, updatedAt: new Date() } });
     await this.ensureGuildSettings(input.id);
   }
@@ -174,7 +174,7 @@ export class PlatformStore {
       .where(eq(guilds.id, guildId)).limit(1);
     const row = rows[0];
     if (!row?.guild) throw new Error(`Guild ${guildId} has not been initialized`);
-    const selectedPlan = row.guild.privateAssigned ? await this.getPlanBySlug('private') : row.plan ?? await this.getPlanBySlug('free');
+    const selectedPlan = row.guild.privateAssigned ? await this.getPlanBySlug('private') : row.plan ?? await this.getFreePlanOrFallback();
     const value: GuildRuntimeConfig = {
       guildId,
       planId: selectedPlan.id,
@@ -564,6 +564,25 @@ export class PlatformStore {
     return result[0]!;
   }
 
+  async deletePlan(id: string) {
+    const row = await this.database.db.select().from(plans).where(eq(plans.id, id)).limit(1);
+    const plan = row[0];
+    if (!plan) throw new Error('plan_not_found');
+    if (plan.kind === 'private' || plan.slug === 'private') throw new Error('system_plan_cannot_be_deleted');
+    const [assignedGuild, subscription] = await Promise.all([
+      this.database.db.select({ id: guilds.id }).from(guilds).where(eq(guilds.planId, id)).limit(1),
+      this.database.db.select({ guildId: subscriptions.guildId }).from(subscriptions).where(eq(subscriptions.planId, id)).limit(1)
+    ]);
+    if (subscription[0] || (plan.kind !== 'free' && assignedGuild[0])) throw new Error('plan_in_use');
+    if (plan.kind === 'free' && assignedGuild[0]) {
+      await this.database.db.update(guilds).set({ planId: null, updatedAt: new Date() }).where(eq(guilds.planId, id));
+    }
+    await this.database.db.delete(plans).where(eq(plans.id, id));
+    this.cache.clear();
+    await this.database.pool.query("SELECT pg_notify('giada_plan_config', $1)", [plan.slug]);
+    return plan;
+  }
+
   async assignPrivate(guildId: string, assigned: boolean) {
     const row = await this.database.db.update(guilds).set({ privateAssigned: assigned, updatedAt: new Date() }).where(eq(guilds.id, guildId)).returning({ id: guilds.id });
     if (!row[0]) throw new Error('guild_not_found');
@@ -586,16 +605,28 @@ export class PlatformStore {
   }
 
   private async seedSystemPlans() {
+    const hadPlans = Boolean((await this.database.db.select({ id: plans.id }).from(plans).limit(1))[0]);
     await this.database.db.insert(plans).values([
-      { slug: 'free', name: 'Free', kind: 'free', description: 'Shared Groq text access', features: FREE_FEATURES, published: true, sortOrder: 0 },
-      { slug: 'private', name: 'Private', kind: 'private', description: 'Owner-assigned Gemini Live access', features: PRIVATE_FEATURES, published: false, sortOrder: 10_000 }
+      ...(hadPlans ? [] : [{ slug: 'free', name: 'Free', kind: 'free' as const, description: 'Shared Groq text access', features: FREE_FEATURES, published: true, sortOrder: 0 }]),
+      { slug: 'private', name: 'Private', kind: 'private' as const, description: 'Owner-assigned Gemini Live access', features: PRIVATE_FEATURES, published: false, sortOrder: 10_000 }
     ]).onConflictDoNothing({ target: plans.slug });
   }
 
-  private async getPlanBySlug(slug: string) {
+  private async findPlanBySlug(slug: string) {
     const row = await this.database.db.select().from(plans).where(eq(plans.slug, slug)).limit(1);
-    if (!row[0]) throw new Error(`Missing system plan: ${slug}`);
-    return row[0];
+    return row[0] ?? null;
+  }
+
+  private async getFreePlanOrFallback() {
+    return await this.findPlanBySlug('free') ?? {
+      id: 'implicit-free', slug: 'free', name: 'Free', kind: 'free' as const, features: FREE_FEATURES
+    };
+  }
+
+  private async getPlanBySlug(slug: string) {
+    const plan = await this.findPlanBySlug(slug);
+    if (!plan) throw new Error(`Missing system plan: ${slug}`);
+    return plan;
   }
 
   private async ensureGuildSettings(guildId: string) {

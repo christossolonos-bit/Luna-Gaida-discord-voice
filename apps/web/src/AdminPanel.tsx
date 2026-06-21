@@ -96,6 +96,15 @@ export function AdminPanel() {
     showSuccess(result.stripeWarning ? 'Plan saved, but Stripe pricing could not be synchronized. The plan is not purchasable until Stripe is fixed and the plan is saved again.' : 'Plan saved.');
   };
 
+  const deletePlan = async () => {
+    if (!editingPlan?.id) return;
+    if (!confirm(`Delete plan “${editingPlan.name}”? This cannot be undone.`)) return;
+    const result = await api<{ stripeWarning: string | null }>(`/api/admin/plans/${editingPlan.id}`, { method: 'DELETE' });
+    setEditingPlan(null);
+    await reload();
+    showSuccess(result.stripeWarning ? 'Plan deleted, but its Stripe product could not be archived.' : 'Plan deleted.');
+  };
+
   const addKey = async () => {
     await api('/api/admin/provider-keys', { method: 'POST', body: json(newKey) });
     setNewKey(emptyKey);
@@ -169,6 +178,7 @@ export function AdminPanel() {
       <label className="toggle-row"><div><strong>Published</strong><small>Visible during checkout.</small></div><input type="checkbox" checked={editingPlan.published} onChange={(event) => setEditingPlan({ ...editingPlan, published: event.target.checked })} /><i /></label>
       <AdminField label="Feature configuration (JSON)"><textarea className="large" value={featureJson} onChange={(event) => setFeatureJson(event.target.value)} /></AdminField>
       <button onClick={() => void savePlan().catch(showError)}>Save plan</button>
+      {editingPlan.id && editingPlan.kind !== 'private' && <button className="danger" onClick={() => void deletePlan().catch(showError)}>Delete plan</button>}
       <button className="danger" onClick={() => setEditingPlan(null)}>Cancel</button>
     </AdminSection>}
 

@@ -58,6 +58,7 @@ app.setErrorHandler((error, request, reply) => {
   if (denied) return reply.code(403).send({ error: message });
   if (message.endsWith('_too_long_for_plan')) return reply.code(400).send({ error: message });
   if (message.endsWith('_not_found')) return reply.code(404).send({ error: message });
+  if (message === 'plan_in_use' || message === 'system_plan_cannot_be_deleted') return reply.code(409).send({ error: message });
   logger.error('HTTP request failed', { method: request.method, url: request.url, error: message });
   return reply.code(500).send({ error: 'internal_server_error' });
 });

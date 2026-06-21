@@ -333,6 +333,23 @@ export async function registerWebRoutes(app: FastifyInstance, config: AppConfig,
     return { plan, stripeWarning };
   });
 
+  app.delete('/api/admin/plans/:id', async (request, reply) => {
+    const auth = await authorizeOwner(request, reply, store, config, true);
+    if (!auth) return;
+    const id = z.string().uuid().parse((request.params as { id: string }).id);
+    const plan = await store.deletePlan(id);
+    let stripeWarning: string | null = null;
+    if (stripe && plan.stripeProductId) {
+      try {
+        await stripe.products.update(plan.stripeProductId, { active: false });
+      } catch (error) {
+        stripeWarning = 'stripe_product_archive_failed';
+        logger.warn('Deleted plan locally but could not archive its Stripe product', { planId: id, stripeProductId: plan.stripeProductId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return { ok: true, stripeWarning };
+  });
+
   app.get('/api/admin/provider-keys', async (request, reply) => {
     const auth = await authorizeOwner(request, reply, store, config);
     if (!auth) return;
