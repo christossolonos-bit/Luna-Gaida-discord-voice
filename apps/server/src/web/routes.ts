@@ -10,6 +10,9 @@ import type { CredentialProvider } from '../platform/types.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const ADMINISTRATOR = 0x8n;
+const DISCORD_GUILD_CACHE_MS = 60_000;
+const discordGuildCache = new Map<string, { expiresAt: number; promise: Promise<DiscordGuild[]> }>();
+const discordTokenRefreshes = new Map<string, Promise<string>>();
 
 interface DiscordUser { id: string; username: string; avatar?: string | null }
 interface DiscordGuild { id: string; name: string; icon?: string | null; owner?: boolean; permissions: string }
@@ -100,15 +103,16 @@ export async function registerWebRoutes(app: FastifyInstance, config: AppConfig,
     const context = await authorizeGuild(request, reply, store, config);
     if (!context) return;
     if (!config.DISCORD_BOT_TOKEN) return reply.code(503).send({ error: 'discord_bot_not_configured' });
-    const response = await fetch(`${DISCORD_API}/guilds/${context.guild.id}/channels`, {
-      headers: { Authorization: `Bot ${config.DISCORD_BOT_TOKEN}` },
-      signal: AbortSignal.timeout(15_000)
-    });
-    if (!response.ok) return reply.code(502).send({ error: 'discord_channels_fetch_failed' });
     const runtime = await store.getGuildRuntime(context.guild.id);
+    let rawChannels: unknown;
+    try {
+      rawChannels = await discordApiFetch<unknown>(`/guilds/${context.guild.id}/channels`, `Bot ${config.DISCORD_BOT_TOKEN}`);
+    } catch {
+      return reply.code(502).send({ error: 'discord_channels_fetch_failed' });
+    }
     const channels = z.array(z.object({
       id: z.string(), name: z.string().optional(), type: z.number(), nsfw: z.boolean().optional(), parent_id: z.string().nullable().optional()
-    })).parse(await response.json()) as DiscordChannel[];
+    })).parse(rawChannels) as DiscordChannel[];
     return {
       channels: channels.filter((channel) => [0, 2, 5, 13, 15].includes(channel.type)).map((channel) => ({
         id: channel.id,
@@ -439,33 +443,59 @@ async function authorizeOwner(request: FastifyRequest, reply: FastifyReply, stor
 }
 
 async function getDiscordGuilds(auth: NonNullable<Awaited<ReturnType<typeof authenticate>>>, store: PlatformStore, config: AppConfig) {
-  let token = store.decryptSessionAccessToken(auth.session.encryptedAccessToken);
-  if (auth.session.tokenExpiresAt.getTime() <= Date.now() + 60_000) {
+  const token = await getDiscordAccessToken(auth, store, config);
+  const cached = discordGuildCache.get(auth.session.id);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+  const promise = discordFetch<DiscordGuild[]>('/users/@me/guilds', token).catch((error) => {
+    if (discordGuildCache.get(auth.session.id)?.promise === promise) discordGuildCache.delete(auth.session.id);
+    throw error;
+  });
+  discordGuildCache.set(auth.session.id, { expiresAt: Date.now() + DISCORD_GUILD_CACHE_MS, promise });
+  const expiry = setTimeout(() => {
+    if (discordGuildCache.get(auth.session.id)?.promise === promise) discordGuildCache.delete(auth.session.id);
+  }, DISCORD_GUILD_CACHE_MS);
+  expiry.unref();
+  return promise;
+}
+
+async function getDiscordAccessToken(auth: NonNullable<Awaited<ReturnType<typeof authenticate>>>, store: PlatformStore, config: AppConfig) {
+  if (auth.session.tokenExpiresAt.getTime() > Date.now() + 60_000) return store.decryptSessionAccessToken(auth.session.encryptedAccessToken);
+  const existing = discordTokenRefreshes.get(auth.session.id);
+  if (existing) return existing;
+  discordGuildCache.delete(auth.session.id);
+  const refresh = (async () => {
     const refreshToken = store.decryptSessionRefreshToken(auth.session.encryptedRefreshToken);
     if (!refreshToken || !config.DISCORD_APPLICATION_ID || !config.DISCORD_CLIENT_SECRET) throw new Error('discord_oauth_session_expired');
-    const body = new URLSearchParams({
-      client_id: config.DISCORD_APPLICATION_ID,
-      client_secret: config.DISCORD_CLIENT_SECRET,
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken
-    });
-    const response = await fetch(`${DISCORD_API}/oauth2/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+    const body = new URLSearchParams({ client_id: config.DISCORD_APPLICATION_ID, client_secret: config.DISCORD_CLIENT_SECRET, grant_type: 'refresh_token', refresh_token: refreshToken });
+    const response = await fetch(`${DISCORD_API}/oauth2/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body, signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error('discord_oauth_refresh_failed');
     const next = z.object({ access_token: z.string(), refresh_token: z.string().optional(), expires_in: z.number() }).parse(await response.json());
-    token = next.access_token;
     await store.updateSessionTokens(auth.session.id, {
-      accessToken: token,
+      accessToken: next.access_token,
       ...(next.refresh_token ? { refreshToken: next.refresh_token } : {}),
       tokenExpiresAt: new Date(Date.now() + next.expires_in * 1000)
     });
-  }
-  return discordFetch<DiscordGuild[]>('/users/@me/guilds', token);
+    return next.access_token;
+  })().finally(() => discordTokenRefreshes.delete(auth.session.id));
+  discordTokenRefreshes.set(auth.session.id, refresh);
+  return refresh;
 }
 
 async function discordFetch<T>(path: string, accessToken: string): Promise<T> {
-  const response = await fetch(`${DISCORD_API}${path}`, { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(15_000) });
-  if (!response.ok) throw new Error(`Discord API HTTP ${response.status}`);
-  return response.json() as Promise<T>;
+  return discordApiFetch<T>(path, `Bearer ${accessToken}`);
+}
+
+async function discordApiFetch<T>(path: string, authorization: string): Promise<T> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await fetch(`${DISCORD_API}${path}`, { headers: { Authorization: authorization }, signal: AbortSignal.timeout(15_000) });
+    if (response.ok) return response.json() as Promise<T>;
+    if (response.status !== 429 || attempt > 0) throw new Error(`Discord API HTTP ${response.status}`);
+    const payload = await response.json().catch(() => ({})) as { retry_after?: number };
+    const headerSeconds = Number(response.headers.get('retry-after') ?? 0);
+    const retrySeconds = Number.isFinite(payload.retry_after) ? payload.retry_after! : headerSeconds;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(retrySeconds * 1_000, 250), 10_000)));
+  }
+  throw new Error('Discord API retry exhausted');
 }
 
 function canManageGuild(guild: DiscordGuild) {
