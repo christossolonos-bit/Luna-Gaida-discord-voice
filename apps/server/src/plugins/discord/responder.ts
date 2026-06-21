@@ -248,6 +248,7 @@ export class DiscordTextResponder {
         guildId,
         planId: 'legacy',
         planSlug: 'private',
+        planName: 'Private',
         planKind: 'private' as const,
         features: {
           geminiText: true, geminiVoice: true, groqText: true, nvidiaVision: true, kimiFallback: true,

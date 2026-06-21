@@ -6,7 +6,7 @@ import { routeText, textCredits, voiceCredits } from '../src/providers/routing.j
 
 function runtime(kind: GuildRuntimeConfig['planKind'], features = FREE_FEATURES): GuildRuntimeConfig {
   return {
-    guildId: '1', planId: '1', planSlug: kind, planKind: kind, features,
+    guildId: '1', planId: '1', planSlug: kind, planName: kind, planKind: kind, features,
     settings: guildSettingsSchema.parse({}),
     personality: guildPersonalitySchema.parse({})
   };

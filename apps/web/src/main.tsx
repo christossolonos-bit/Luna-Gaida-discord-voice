@@ -12,6 +12,7 @@ import { AdminPanel } from './AdminPanel';
 interface RuntimePayload {
   runtime: {
     planSlug: string;
+    planName: string;
     planKind: string;
     features: Record<string, boolean | number>;
     settings: GuildSettings;
@@ -113,7 +114,7 @@ function App() {
       <div className="account"><div className="avatar">{me.user.username.slice(0, 1).toUpperCase()}</div><div>{me.user.username}<small>{me.owner ? 'Platform owner' : 'Server admin'}</small></div><button title="Log out" onClick={() => void api('/api/logout', { method: 'POST' }).then(() => location.reload())}><LogOut /></button></div>
     </aside>
     <main>
-      <header><div><p>{guild?.name ?? 'Server'}</p><h1>{titleFor(tab)}</h1></div>{payload && <span className={`plan ${payload.runtime.planKind}`}>{payload.runtime.planSlug}</span>}</header>
+      <header><div><p>{guild?.name ?? 'Server'}</p><h1>{titleFor(tab)}</h1></div>{payload && <span className={`plan ${payload.runtime.planKind}`}>{payload.runtime.planName}</span>}</header>
       {error && <div className="notice error">{error}</div>}
       {saved && <div className="notice saved">Settings saved</div>}
       {!payload ? <div className="loading">Loading server configuration…</div> : <>
@@ -323,7 +324,7 @@ function Billing({ guildId, payload }: { guildId: string; payload: RuntimePayloa
   const usage = payload.usage;
   const [plans, setPlans] = useState<Array<{ id: string; name: string; description: string; kind: string; priceAmount: number | null; priceCurrency: string; features: Record<string, unknown> }>>([]);
   useEffect(() => { void api<{ plans: typeof plans }>('/api/plans').then((result) => setPlans(result.plans)); }, []);
-  return <><div className="metrics"><Metric label="Messages" value={usage.unlimited ? 'Unlimited' : `${usage.messagesUsed} / ${usage.messageLimit}`} /><Metric label="Credits" value={usage.unlimited ? 'Unlimited' : `${usage.creditsUsed} / ${usage.creditLimit}`} /><Metric label="Plan" value={payload.runtime.planSlug} /></div><Section title="Subscription" description={payload.subscription ? `Status: ${payload.subscription.status}` : 'This server has no paid subscription.'} icon={<CreditCard />}>{payload.subscription && <button onClick={() => void api<{ url: string }>('/api/billing/portal', { method: 'POST', body: json({ guildId }) }).then(({ url }) => location.href = url)}>Open billing portal</button>}<div className="plan-grid">{plans.filter((plan) => plan.kind === 'paid').map((plan) => <div className="plan-card" key={plan.id}><strong>{plan.name}</strong><p>{plan.description}</p><b>{plan.priceAmount == null ? 'Unavailable' : new Intl.NumberFormat(undefined, { style: 'currency', currency: plan.priceCurrency }).format(plan.priceAmount / 100)} / month</b><button disabled={plan.priceAmount == null} onClick={() => void api<{ url: string }>('/api/billing/checkout', { method: 'POST', body: json({ guildId, planId: plan.id }) }).then(({ url }) => location.href = url)}>Choose plan</button></div>)}</div></Section></>;
+  return <><div className="metrics"><Metric label="Messages" value={usage.unlimited ? 'Unlimited' : `${usage.messagesUsed} / ${usage.messageLimit}`} /><Metric label="Credits" value={usage.unlimited ? 'Unlimited' : `${usage.creditsUsed} / ${usage.creditLimit}`} /><Metric label="Plan" value={payload.runtime.planName} /></div><Section title="Subscription" description={payload.subscription ? `Status: ${payload.subscription.status}` : 'This server has no paid subscription.'} icon={<CreditCard />}>{payload.subscription && <button onClick={() => void api<{ url: string }>('/api/billing/portal', { method: 'POST', body: json({ guildId }) }).then(({ url }) => location.href = url)}>Open billing portal</button>}<div className="plan-grid">{plans.filter((plan) => plan.kind === 'paid').map((plan) => <div className="plan-card" key={plan.id}><strong>{plan.name}</strong><p>{plan.description}</p><b>{plan.priceAmount == null ? 'Unavailable' : new Intl.NumberFormat(undefined, { style: 'currency', currency: plan.priceCurrency }).format(plan.priceAmount / 100)} / month</b><button disabled={plan.priceAmount == null} onClick={() => void api<{ url: string }>('/api/billing/checkout', { method: 'POST', body: json({ guildId, planId: plan.id }) }).then(({ url }) => location.href = url)}>Choose plan</button></div>)}</div></Section></>;
 }
 
 function Admin() {

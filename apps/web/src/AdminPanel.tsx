@@ -84,13 +84,16 @@ export function AdminPanel() {
 
   const savePlan = async () => {
     if (!editingPlan) return;
-    await api('/api/admin/plans', {
+    let features: Record<string, unknown>;
+    try { features = JSON.parse(featureJson) as Record<string, unknown>; } catch { throw new Error('Feature configuration must be valid JSON.'); }
+    const slug = editingPlan.slug.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const result = await api<{ stripeWarning: string | null }>('/api/admin/plans', {
       method: 'PUT',
-      body: json({ ...editingPlan, features: JSON.parse(featureJson) })
+      body: json({ ...editingPlan, slug, name: editingPlan.name.trim(), priceCurrency: (editingPlan.priceCurrency ?? 'eur').trim().toLowerCase(), features })
     });
     setEditingPlan(null);
     await reload();
-    showSuccess('Plan saved.');
+    showSuccess(result.stripeWarning ? 'Plan saved, but Stripe pricing could not be synchronized. The plan is not purchasable until Stripe is fixed and the plan is saved again.' : 'Plan saved.');
   };
 
   const addKey = async () => {
@@ -160,7 +163,7 @@ export function AdminPanel() {
       <div className="grid">
         <AdminField label="Name"><input value={editingPlan.name} onChange={(event) => setEditingPlan({ ...editingPlan, name: event.target.value })} /></AdminField>
         <AdminField label="Slug"><input value={editingPlan.slug} onChange={(event) => setEditingPlan({ ...editingPlan, slug: event.target.value })} /></AdminField>
-        <AdminField label="Monthly price"><input type="number" value={editingPlan.priceAmount ?? ''} onChange={(event) => setEditingPlan({ ...editingPlan, priceAmount: Number(event.target.value) })} /></AdminField>
+        <AdminField label="Monthly price"><input type="number" min="1" step="1" value={editingPlan.priceAmount ?? ''} onChange={(event) => setEditingPlan({ ...editingPlan, priceAmount: event.target.value === '' ? null : Number(event.target.value) })} /></AdminField>
         <AdminField label="Currency"><input value={editingPlan.priceCurrency ?? 'eur'} onChange={(event) => setEditingPlan({ ...editingPlan, priceCurrency: event.target.value })} /></AdminField>
       </div>
       <label className="toggle-row"><div><strong>Published</strong><small>Visible during checkout.</small></div><input type="checkbox" checked={editingPlan.published} onChange={(event) => setEditingPlan({ ...editingPlan, published: event.target.checked })} /><i /></label>

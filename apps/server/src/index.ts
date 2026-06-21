@@ -40,11 +40,11 @@ app.addHook('onSend', async (_request, reply) => {
   reply.header('Permissions-Policy', 'camera=(), geolocation=(), microphone=(self)');
   reply.header('Content-Security-Policy', [
     "default-src 'self'",
-    "script-src 'self'",
+    "script-src 'self' https://static.cloudflareinsights.com",
     "style-src 'self' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: https:",
-    "connect-src 'self' ws: wss:",
+    "connect-src 'self' ws: wss: https://cloudflareinsights.com",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self' https://discord.com"

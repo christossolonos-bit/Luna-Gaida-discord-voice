@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { AppConfig } from '../config/env.js';
 import type { PlatformStore } from '../platform/store.js';
 import type { CredentialProvider } from '../platform/types.js';
+import { logger } from '../logging/logger.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const ADMINISTRATOR = 0x8n;
@@ -291,19 +292,30 @@ export async function registerWebRoutes(app: FastifyInstance, config: AppConfig,
     const existing = body.id ? (await store.listPlans(true)).find((plan) => plan.id === body.id) : null;
     let stripeProductId = existing?.stripeProductId ?? null;
     let stripePriceId = existing?.stripePriceId ?? null;
-    if (body.kind === 'paid' && body.priceAmount && stripe) {
-      if (!stripeProductId) stripeProductId = (await stripe.products.create({ name: body.name, metadata: { planSlug: body.slug } })).id;
-      if (!existing || existing.priceAmount !== body.priceAmount || existing.priceCurrency !== (body.priceCurrency ?? 'eur')) {
-        stripePriceId = (await stripe.prices.create({
-          product: stripeProductId,
-          unit_amount: body.priceAmount,
-          currency: body.priceCurrency ?? 'eur',
-          recurring: { interval: 'month' },
-          metadata: { planSlug: body.slug }
-        })).id;
+    let stripeWarning: string | null = null;
+    const priceChanged = !existing || existing.priceAmount !== body.priceAmount || existing.priceCurrency !== (body.priceCurrency ?? 'eur');
+    if (body.kind === 'paid' && body.priceAmount) {
+      if (stripe) {
+        try {
+          if (!stripeProductId) stripeProductId = (await stripe.products.create({ name: body.name, metadata: { planSlug: body.slug } })).id;
+          if (priceChanged) stripePriceId = (await stripe.prices.create({
+            product: stripeProductId,
+            unit_amount: body.priceAmount,
+            currency: body.priceCurrency ?? 'eur',
+            recurring: { interval: 'month' },
+            metadata: { planSlug: body.slug }
+          })).id;
+        } catch (error) {
+          if (priceChanged) stripePriceId = null;
+          stripeWarning = 'stripe_price_sync_failed';
+          logger.warn('Plan saved without a purchasable Stripe Price', { slug: body.slug, error: error instanceof Error ? error.message : String(error) });
+        }
+      } else {
+        if (priceChanged) stripePriceId = null;
+        stripeWarning = 'stripe_not_configured';
       }
     }
-    return { plan: await store.upsertPlan({
+    const plan = await store.upsertPlan({
       slug: body.slug,
       name: body.name,
       kind: body.kind,
@@ -317,7 +329,8 @@ export async function registerWebRoutes(app: FastifyInstance, config: AppConfig,
       ...(body.published !== undefined ? { published: body.published } : {}),
       ...(body.archived !== undefined ? { archived: body.archived } : {}),
       ...(body.sortOrder !== undefined ? { sortOrder: body.sortOrder } : {})
-    }) };
+    });
+    return { plan, stripeWarning };
   });
 
   app.get('/api/admin/provider-keys', async (request, reply) => {

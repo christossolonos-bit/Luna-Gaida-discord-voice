@@ -14,6 +14,7 @@ export interface GuildRuntimeConfig {
   guildId: string;
   planId: string;
   planSlug: string;
+  planName: string;
   planKind: 'free' | 'paid' | 'private';
   features: PlanFeatures;
   settings: GuildSettings;
@@ -178,6 +179,7 @@ export class PlatformStore {
       guildId,
       planId: selectedPlan.id,
       planSlug: selectedPlan.slug,
+      planName: selectedPlan.name,
       planKind: selectedPlan.kind,
       features: parsePlanFeatures(selectedPlan.features),
       settings: guildSettingsSchema.parse(row.config?.settings ?? {}),

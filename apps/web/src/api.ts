@@ -14,8 +14,10 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
   });
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: response.statusText })) as { error?: string };
-    throw new Error(payload.error ?? `HTTP ${response.status}`);
+    const payload = await response.json().catch(() => ({ error: response.statusText })) as { error?: string; issues?: Array<{ path?: string; message?: string }> };
+    const issue = payload.issues?.[0];
+    const detail = issue ? `${issue.path ? `${issue.path}: ` : ''}${issue.message ?? 'invalid value'}` : '';
+    throw new Error([payload.error ?? `HTTP ${response.status}`, detail].filter(Boolean).join(' — '));
   }
   return response.json() as Promise<T>;
 }

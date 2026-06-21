@@ -11,7 +11,9 @@ export async function api(path, init = {}) {
     });
     if (!response.ok) {
         const payload = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(payload.error ?? `HTTP ${response.status}`);
+        const issue = payload.issues?.[0];
+        const detail = issue ? `${issue.path ? `${issue.path}: ` : ''}${issue.message ?? 'invalid value'}` : '';
+        throw new Error([payload.error ?? `HTTP ${response.status}`, detail].filter(Boolean).join(' — '));
     }
     return response.json();
 }
