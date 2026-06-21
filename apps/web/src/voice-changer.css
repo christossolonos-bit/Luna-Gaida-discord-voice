@@ -1,0 +1,20 @@
+.voice-editor {
+  padding-top: 16px;
+}
+
+.voice-control-group {
+  border-top: 1px solid #1c2231;
+  margin-top: 3px;
+  padding-top: 16px;
+}
+
+.voice-control-group > strong {
+  color: #aeb7ca;
+  display: block;
+  font-size: 12px;
+  margin-bottom: 13px;
+}
+
+.voice-control-group .field {
+  margin-bottom: 14px;
+}

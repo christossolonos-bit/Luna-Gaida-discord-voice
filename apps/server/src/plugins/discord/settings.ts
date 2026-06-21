@@ -121,6 +121,20 @@ export class DiscordSettingsStore {
     this.onChanged?.(this.get(guildId));
   }
 
+  replaceListeningChannelsFromPlatform(guildId: string, channelIds: string[]) {
+    const replace = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM discord_listening_channels WHERE guild_id = ?').run(guildId);
+      const insert = this.db.prepare(`
+        INSERT INTO discord_listening_channels (guild_id, channel_id, updated_at)
+        VALUES (?, ?, ?)
+      `);
+      const updatedAt = new Date().toISOString();
+      for (const channelId of channelIds) insert.run(guildId, channelId, updatedAt);
+      this.upsertLegacy(guildId, { listeningChannelId: channelIds[0] ?? null });
+    });
+    replace();
+  }
+
   addVoiceWatchChannel(guildId: string, channelId: string) {
     this.db.prepare(`
       INSERT INTO discord_voice_watch_channels (guild_id, channel_id, updated_at)
@@ -142,6 +156,20 @@ export class DiscordSettingsStore {
     this.db.prepare('DELETE FROM discord_voice_watch_channels WHERE guild_id = ?').run(guildId);
     this.upsertLegacy(guildId, { voiceWatchChannelId: null });
     this.onChanged?.(this.get(guildId));
+  }
+
+  replaceVoiceWatchChannelsFromPlatform(guildId: string, channelIds: string[]) {
+    const replace = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM discord_voice_watch_channels WHERE guild_id = ?').run(guildId);
+      const insert = this.db.prepare(`
+        INSERT INTO discord_voice_watch_channels (guild_id, channel_id, updated_at)
+        VALUES (?, ?, ?)
+      `);
+      const updatedAt = new Date().toISOString();
+      for (const channelId of channelIds) insert.run(guildId, channelId, updatedAt);
+      this.upsertLegacy(guildId, { voiceWatchChannelId: channelIds[0] ?? null });
+    });
+    replace();
   }
 
   listListeningChannels(guildId: string) {

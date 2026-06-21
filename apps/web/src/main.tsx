@@ -5,6 +5,7 @@ import { api, json, loadMe, type Guild, type Me } from './api';
 import './styles.css';
 import './chat.css';
 import './admin.css';
+import './voice-changer.css';
 import { AdminPanel } from './AdminPanel';
 
 interface RuntimePayload {
@@ -142,10 +143,68 @@ function General({ guildId, payload, onSave }: { guildId: string; payload: Runti
     </Section>
     <Section title="Voice changer" description="FFmpeg filter applied to generated speech, not music." icon={<Volume2 />}>
       <Toggle label="Enable voice changer" detail={state.runtime.features.voiceChanger ? 'Applied to Discord and browser voice.' : 'Not available on this plan.'} value={settings.voiceChanger.enabled} disabled={!state.runtime.features.voiceChanger} onChange={(enabled) => set({ voiceChanger: { ...settings.voiceChanger, enabled } })} />
-      <Field label="FFmpeg audio filter"><input value={settings.voiceChanger.ffmpegFilter} onChange={(e) => set({ voiceChanger: { ...settings.voiceChanger, ffmpegFilter: e.target.value } })} /></Field>
+      <VoiceChangerEditor value={settings.voiceChanger} disabled={!state.runtime.features.voiceChanger} onChange={(voiceChanger) => set({ voiceChanger })} />
     </Section>
     <button className="primary">Save changes</button>
   </form>;
+}
+
+interface VoiceProfileValues {
+  highpass: number; lowpass: number; trebleGain: number; trebleFrequency: number;
+  compressorThreshold: number; compressorRatio: number; compressorAttack: number;
+  compressorRelease: number; pitchSemitones: number; volume: number;
+}
+
+const defaultVoiceValues: VoiceProfileValues = {
+  highpass: 100, lowpass: 13_500, trebleGain: 2.5, trebleFrequency: 4_000,
+  compressorThreshold: -18, compressorRatio: 2.4, compressorAttack: 5,
+  compressorRelease: 65, pitchSemitones: 2, volume: 0.95
+};
+
+const voicePresets = [
+  { name: 'bypass', label: 'Bypass', enabled: false, values: { ...defaultVoiceValues, pitchSemitones: 0, trebleGain: 0, volume: 1 } },
+  { name: 'anime-girl', label: 'Anime girl', enabled: true, values: defaultVoiceValues }
+];
+
+function VoiceChangerEditor({ value, disabled, onChange }: { value: GuildSettings['voiceChanger']; disabled: boolean; onChange: (value: GuildSettings['voiceChanger']) => void }) {
+  const values = parseVoiceFilter(value.ffmpegFilter);
+  const profile = voicePresets.some((preset) => preset.name === value.name) ? value.name : 'custom';
+  const update = (patch: Partial<VoiceProfileValues>) => {
+    const name = profile === 'custom' ? value.name : `${value.name}-custom`;
+    onChange({ ...value, name, ffmpegFilter: buildVoiceFilter({ ...values, ...patch }) });
+  };
+  const numeric = (label: string, key: keyof VoiceProfileValues, min: number, max: number, step: number) => <Field label={label}><input disabled={disabled} type="number" min={min} max={max} step={step} value={values[key]} onChange={(event) => update({ [key]: Number(event.target.value) })} /></Field>;
+  return <div className="voice-editor">
+    <div className="grid">
+      <Field label="Current profile"><select disabled={disabled} value={profile} onChange={(event) => {
+        const preset = voicePresets.find((item) => item.name === event.target.value);
+        if (preset) onChange({ enabled: preset.enabled, name: preset.name, ffmpegFilter: preset.name === 'bypass' ? 'anull' : buildVoiceFilter(preset.values) });
+      }}>{voicePresets.map((preset) => <option key={preset.name} value={preset.name}>{preset.label}</option>)}{profile === 'custom' && <option value="custom">Custom ({value.name})</option>}</select></Field>
+      <Field label="Profile name"><input disabled={disabled} value={value.name} maxLength={80} onChange={(event) => onChange({ ...value, name: event.target.value })} /></Field>
+    </div>
+    <div className="voice-control-group"><strong>Pitch and level</strong><div className="grid">{numeric('Pitch (semitones)', 'pitchSemitones', -12, 12, 0.1)}{numeric('Output volume', 'volume', 0, 3, 0.01)}</div></div>
+    <div className="voice-control-group"><strong>Frequency shaping</strong><div className="grid">{numeric('High-pass frequency (Hz)', 'highpass', 20, 2_000, 1)}{numeric('Low-pass frequency (Hz)', 'lowpass', 1_000, 20_000, 1)}{numeric('Treble gain (dB)', 'trebleGain', -20, 20, 0.1)}{numeric('Treble frequency (Hz)', 'trebleFrequency', 1_000, 12_000, 1)}</div></div>
+    <div className="voice-control-group"><strong>Compressor</strong><div className="grid">{numeric('Threshold (dB)', 'compressorThreshold', -60, 0, 0.1)}{numeric('Ratio', 'compressorRatio', 1, 20, 0.1)}{numeric('Attack (ms)', 'compressorAttack', 0.01, 2_000, 0.1)}{numeric('Release (ms)', 'compressorRelease', 0.01, 9_000, 0.1)}</div></div>
+  </div>;
+}
+
+function parseVoiceFilter(filter: string): VoiceProfileValues {
+  if (filter.trim() === 'anull') return { ...defaultVoiceValues, pitchSemitones: 0, trebleGain: 0, volume: 1 };
+  const read = (pattern: RegExp, fallback: number) => Number(filter.match(pattern)?.[1] ?? fallback);
+  const sampleRate = read(/asetrate=([\d.]+)/, 24_000 * Math.pow(2, defaultVoiceValues.pitchSemitones / 12));
+  return {
+    highpass: read(/highpass=f=([\d.]+)/, defaultVoiceValues.highpass), lowpass: read(/lowpass=f=([\d.]+)/, defaultVoiceValues.lowpass),
+    trebleGain: read(/treble=g=(-?[\d.]+):f=/, defaultVoiceValues.trebleGain), trebleFrequency: read(/treble=g=-?[\d.]+:f=([\d.]+)/, defaultVoiceValues.trebleFrequency),
+    compressorThreshold: read(/acompressor=threshold=(-?[\d.]+)dB/, defaultVoiceValues.compressorThreshold), compressorRatio: read(/acompressor=[^,]*ratio=([\d.]+)/, defaultVoiceValues.compressorRatio),
+    compressorAttack: read(/acompressor=[^,]*attack=([\d.]+)/, defaultVoiceValues.compressorAttack), compressorRelease: read(/acompressor=[^,]*release=([\d.]+)/, defaultVoiceValues.compressorRelease),
+    pitchSemitones: Number((12 * Math.log2(sampleRate / 24_000)).toFixed(2)), volume: read(/(?:^|,)volume=([\d.]+)/, defaultVoiceValues.volume)
+  };
+}
+
+function buildVoiceFilter(values: VoiceProfileValues) {
+  const sampleRate = Math.round(24_000 * Math.pow(2, values.pitchSemitones / 12));
+  const tempo = Number((24_000 / sampleRate).toFixed(6));
+  return `highpass=f=${values.highpass},lowpass=f=${values.lowpass},treble=g=${values.trebleGain}:f=${values.trebleFrequency},acompressor=threshold=${values.compressorThreshold}dB:ratio=${values.compressorRatio}:attack=${values.compressorAttack}:release=${values.compressorRelease},asetrate=${sampleRate},aresample=24000,atempo=${tempo},volume=${values.volume}`;
 }
 
 function PersonalityEditor({ payload, onSave }: { payload: RuntimePayload; onSave: (value: RuntimePayload) => void }) {

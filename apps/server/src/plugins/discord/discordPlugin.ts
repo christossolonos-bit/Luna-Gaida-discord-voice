@@ -359,12 +359,10 @@ export class DiscordPlugin implements GiadaPlugin {
     const runtime = await this.platform.getGuildRuntime(guild.id);
     const localChannels = this.settings.get(guild.id);
     if (JSON.stringify([...localChannels.listeningChannelIds].sort()) !== JSON.stringify([...runtime.settings.listeningChannelIds].sort())) {
-      this.settings.clearListeningChannels(guild.id);
-      for (const channelId of runtime.settings.listeningChannelIds) this.settings.addListeningChannel(guild.id, channelId);
+      this.settings.replaceListeningChannelsFromPlatform(guild.id, runtime.settings.listeningChannelIds);
     }
     if (JSON.stringify([...localChannels.voiceWatchChannelIds].sort()) !== JSON.stringify([...runtime.settings.voiceWatchChannelIds].sort())) {
-      this.settings.clearVoiceWatchChannels(guild.id);
-      for (const channelId of runtime.settings.voiceWatchChannelIds) this.settings.addVoiceWatchChannel(guild.id, channelId);
+      this.settings.replaceVoiceWatchChannelsFromPlatform(guild.id, runtime.settings.voiceWatchChannelIds);
     }
     const me = await guild.members.fetchMe().catch(() => null);
     if (!me) return;
@@ -544,8 +542,19 @@ export class DiscordPlugin implements GiadaPlugin {
       return;
     }
 
-    const settings = this.settings.get(message.guildId);
-    const listeningChannel = settings.listeningChannelIds.includes(message.channelId);
+    const localSettings = this.settings.get(message.guildId);
+    const listeningChannelIds = this.platform
+      ? await this.platform.getGuildRuntime(message.guildId)
+        .then((runtime) => runtime.settings.listeningChannelIds)
+        .catch((error) => {
+          logger.warn('Could not load always-listen channels from platform; using local settings', {
+            guildId: message.guildId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return localSettings.listeningChannelIds;
+        })
+      : localSettings.listeningChannelIds;
+    const listeningChannel = listeningChannelIds.includes(message.channelId);
     if (!listeningChannel && !addressed) {
       return;
     }
