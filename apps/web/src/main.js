@@ -60,7 +60,7 @@ function General({ guildId, payload, onSave }) {
     const settings = state.runtime.settings;
     const set = (patch) => setState({ ...state, runtime: { ...state.runtime, settings: { ...settings, ...patch } } });
     return _jsxs("form", { onSubmit: (event) => { event.preventDefault(); void onSave(state); }, children: [_jsx(Section, { title: "Bot identity", description: "Discord applies these values only in this server.", icon: _jsx(Bot, {}), children: _jsxs("div", { className: "grid", children: [_jsx(Field, { label: "Server nickname", children: _jsx("input", { disabled: !state.runtime.features.customIdentity, value: settings.nickname ?? '', maxLength: 32, onChange: (e) => set({ nickname: e.target.value || null }) }) }), _jsx(Field, { label: "Avatar image", children: _jsx("input", { disabled: !state.runtime.features.customIdentity, type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", onChange: (e) => { const file = e.target.files?.[0]; if (!file)
-                                    return; const form = new FormData(); form.append('file', file); void api(`/api/guilds/${guildId}/avatar`, { method: 'POST', body: form }).then(({ runtime }) => setState({ ...state, runtime })); } }) })] }) }), _jsxs(Section, { title: "Response settings", description: "Choose enabled modalities and server behavior.", icon: _jsx(MessageSquare, {}), children: [_jsxs("div", { className: "grid", children: [_jsx(Field, { label: "Text provider", children: _jsxs("select", { value: settings.textProvider, onChange: (e) => set({ textProvider: e.target.value }), children: [_jsx("option", { value: "auto", children: "Automatic" }), _jsx("option", { value: "groq", children: "Groq" }), _jsx("option", { value: "gemini", children: "Gemini Live" })] }) }), _jsx(Field, { label: "Voice provider", children: _jsxs("select", { value: settings.voiceProvider, onChange: (e) => set({ voiceProvider: e.target.value }), children: [_jsx("option", { value: "auto", children: "Automatic" }), _jsx("option", { value: "gemini", children: "Gemini Live" })] }) })] }), _jsx(Toggle, { label: "NSFW responses", detail: "Still restricted to Discord age-restricted channels.", value: settings.nsfwEnabled, disabled: !state.runtime.features.nsfw, onChange: (value) => set({ nsfwEnabled: value }) }), _jsx(Toggle, { label: "Browser text chat", detail: "Uses this server's personality and allowance.", value: settings.browserTextEnabled, disabled: !state.runtime.features.browserChat, onChange: (value) => set({ browserTextEnabled: value }) }), _jsxs("div", { className: "grid", children: [_jsx(Field, { label: "Always-listen channel IDs", children: _jsx("input", { value: settings.listeningChannelIds.join(', '), onChange: (e) => set({ listeningChannelIds: splitList(e.target.value) }) }) }), _jsx(Field, { label: "Voice-watch channel IDs", children: _jsx("input", { value: settings.voiceWatchChannelIds.join(', '), onChange: (e) => set({ voiceWatchChannelIds: splitList(e.target.value) }) }) })] })] }), _jsxs(Section, { title: "Voice changer", description: "FFmpeg filter applied to generated speech, not music.", icon: _jsx(Volume2, {}), children: [_jsx(Toggle, { label: "Enable voice changer", detail: state.runtime.features.voiceChanger ? 'Applied to Discord and browser voice.' : 'Not available on this plan.', value: settings.voiceChanger.enabled, disabled: !state.runtime.features.voiceChanger, onChange: (enabled) => set({ voiceChanger: { ...settings.voiceChanger, enabled } }) }), _jsx(VoiceChangerEditor, { value: settings.voiceChanger, disabled: !state.runtime.features.voiceChanger, onChange: (voiceChanger) => set({ voiceChanger }) })] }), _jsx("button", { className: "primary", children: "Save changes" })] });
+                                    return; const form = new FormData(); form.append('file', file); void api(`/api/guilds/${guildId}/avatar`, { method: 'POST', body: form }).then(({ runtime }) => setState({ ...state, runtime })); } }) })] }) }), _jsxs(Section, { title: "Response settings", description: "Choose enabled modalities and server behavior.", icon: _jsx(MessageSquare, {}), children: [_jsxs("div", { className: "grid", children: [_jsx(Field, { label: "Text provider", children: _jsxs("select", { value: settings.textProvider, onChange: (e) => set({ textProvider: e.target.value }), children: [_jsx("option", { value: "auto", children: "Automatic" }), _jsx("option", { value: "groq", children: "Groq" }), _jsx("option", { value: "gemini", children: "Gemini Live" })] }) }), _jsx(Field, { label: "Voice provider", children: _jsxs("select", { value: settings.voiceProvider, onChange: (e) => set({ voiceProvider: e.target.value }), children: [_jsx("option", { value: "auto", children: "Automatic" }), _jsx("option", { value: "gemini", children: "Gemini Live" })] }) })] }), _jsx(Toggle, { label: "NSFW responses", detail: "Still restricted to Discord age-restricted channels.", value: settings.nsfwEnabled, disabled: !state.runtime.features.nsfw, onChange: (value) => set({ nsfwEnabled: value }) }), _jsx(Toggle, { label: "Browser text chat", detail: "Uses this server's personality and allowance.", value: settings.browserTextEnabled, disabled: !state.runtime.features.browserChat, onChange: (value) => set({ browserTextEnabled: value }) }), _jsxs("div", { className: "grid", children: [_jsx(Field, { label: "Always-listen channel IDs", children: _jsx("input", { value: settings.listeningChannelIds.join(', '), onChange: (e) => set({ listeningChannelIds: splitList(e.target.value) }) }) }), _jsx(Field, { label: "Voice-watch channel IDs", children: _jsx("input", { value: settings.voiceWatchChannelIds.join(', '), onChange: (e) => set({ voiceWatchChannelIds: splitList(e.target.value) }) }) })] })] }), _jsxs(Section, { title: "Voice changer", description: "FFmpeg filter applied to generated speech, not music.", icon: _jsx(Volume2, {}), children: [_jsx(Toggle, { label: "Enable voice changer", detail: state.runtime.features.voiceChanger ? 'Applied to Discord and browser voice.' : 'Not available on this plan.', value: settings.voiceChanger.enabled, disabled: !state.runtime.features.voiceChanger, onChange: (enabled) => set({ voiceChanger: { ...settings.voiceChanger, enabled } }) }), _jsx(VoiceChangerEditor, { guildId: guildId, value: settings.voiceChanger, profiles: state.voiceProfiles, disabled: !state.runtime.features.voiceChanger, onProfilesChange: (voiceProfiles) => setState({ ...state, voiceProfiles }), onChange: (voiceChanger) => set({ voiceChanger }) })] }), _jsx("button", { className: "primary", children: "Save changes" })] });
 }
 const defaultVoiceValues = {
     highpass: 100, lowpass: 13_500, trebleGain: 2.5, trebleFrequency: 4_000,
@@ -71,19 +71,38 @@ const voicePresets = [
     { name: 'bypass', label: 'Bypass', enabled: false, values: { ...defaultVoiceValues, pitchSemitones: 0, trebleGain: 0, volume: 1 } },
     { name: 'anime-girl', label: 'Anime girl', enabled: true, values: defaultVoiceValues }
 ];
-function VoiceChangerEditor({ value, disabled, onChange }) {
+function VoiceChangerEditor({ guildId, value, profiles, disabled, onChange, onProfilesChange }) {
+    const [profileError, setProfileError] = useState('');
     const values = parseVoiceFilter(value.ffmpegFilter);
-    const profile = voicePresets.some((preset) => preset.name === value.name) ? value.name : 'custom';
+    const customProfile = profiles.find((item) => item.name === value.name && item.ffmpegFilter === value.ffmpegFilter);
+    const builtinProfile = voicePresets.find((preset) => preset.name === value.name);
+    const selectedProfile = customProfile ? `custom:${customProfile.id}` : builtinProfile ? `builtin:${builtinProfile.name}` : 'unsaved';
     const update = (patch) => {
-        const name = profile === 'custom' ? value.name : `${value.name}-custom`;
+        const name = selectedProfile === 'unsaved' || customProfile ? value.name : `${value.name}-custom`;
         onChange({ ...value, name, ffmpegFilter: buildVoiceFilter({ ...values, ...patch }) });
     };
     const numeric = (label, key, min, max, step) => _jsx(Field, { label: label, children: _jsx("input", { disabled: disabled, type: "number", min: min, max: max, step: step, value: values[key], onChange: (event) => update({ [key]: Number(event.target.value) }) }) });
-    return _jsxs("div", { className: "voice-editor", children: [_jsxs("div", { className: "grid", children: [_jsx(Field, { label: "Current profile", children: _jsxs("select", { disabled: disabled, value: profile, onChange: (event) => {
-                                const preset = voicePresets.find((item) => item.name === event.target.value);
+    return _jsxs("div", { className: "voice-editor", children: [_jsxs("div", { className: "grid", children: [_jsx(Field, { label: "Current profile", children: _jsxs("select", { disabled: disabled, value: selectedProfile, onChange: (event) => {
+                                const [kind, id] = event.target.value.split(':');
+                                const preset = kind === 'builtin' ? voicePresets.find((item) => item.name === id) : undefined;
+                                const saved = kind === 'custom' ? profiles.find((item) => item.id === id) : undefined;
                                 if (preset)
                                     onChange({ enabled: preset.enabled, name: preset.name, ffmpegFilter: preset.name === 'bypass' ? 'anull' : buildVoiceFilter(preset.values) });
-                            }, children: [voicePresets.map((preset) => _jsx("option", { value: preset.name, children: preset.label }, preset.name)), profile === 'custom' && _jsxs("option", { value: "custom", children: ["Custom (", value.name, ")"] })] }) }), _jsx(Field, { label: "Profile name", children: _jsx("input", { disabled: disabled, value: value.name, maxLength: 80, onChange: (event) => onChange({ ...value, name: event.target.value }) }) })] }), _jsxs("div", { className: "voice-control-group", children: [_jsx("strong", { children: "Pitch and level" }), _jsxs("div", { className: "grid", children: [numeric('Pitch (semitones)', 'pitchSemitones', -12, 12, 0.1), numeric('Output volume', 'volume', 0, 3, 0.01)] })] }), _jsxs("div", { className: "voice-control-group", children: [_jsx("strong", { children: "Frequency shaping" }), _jsxs("div", { className: "grid", children: [numeric('High-pass frequency (Hz)', 'highpass', 20, 2_000, 1), numeric('Low-pass frequency (Hz)', 'lowpass', 1_000, 20_000, 1), numeric('Treble gain (dB)', 'trebleGain', -20, 20, 0.1), numeric('Treble frequency (Hz)', 'trebleFrequency', 1_000, 12_000, 1)] })] }), _jsxs("div", { className: "voice-control-group", children: [_jsx("strong", { children: "Compressor" }), _jsxs("div", { className: "grid", children: [numeric('Threshold (dB)', 'compressorThreshold', -60, 0, 0.1), numeric('Ratio', 'compressorRatio', 1, 20, 0.1), numeric('Attack (ms)', 'compressorAttack', 0.01, 2_000, 0.1), numeric('Release (ms)', 'compressorRelease', 0.01, 9_000, 0.1)] })] })] });
+                                if (saved)
+                                    onChange({ enabled: true, name: saved.name, ffmpegFilter: saved.ffmpegFilter });
+                            }, children: [voicePresets.map((preset) => _jsx("option", { value: `builtin:${preset.name}`, children: preset.label }, preset.name)), profiles.map((item) => _jsx("option", { value: `custom:${item.id}`, children: item.name }, item.id)), selectedProfile === 'unsaved' && _jsxs("option", { value: "unsaved", children: ["Unsaved (", value.name, ")"] })] }) }), _jsx(Field, { label: "Profile name", children: _jsx("input", { disabled: disabled, value: value.name, maxLength: 80, onChange: (event) => onChange({ ...value, name: event.target.value }) }) })] }), _jsxs("div", { className: "voice-profile-actions", children: [_jsx("button", { type: "button", disabled: disabled || !value.name.trim(), onClick: () => {
+                            setProfileError('');
+                            void api(`/api/guilds/${guildId}/voice-profiles`, { method: 'POST', body: json({ name: value.name, ffmpegFilter: value.ffmpegFilter }) })
+                                .then(({ profile }) => onProfilesChange([...profiles, profile].sort((a, b) => a.name.localeCompare(b.name))))
+                                .catch((error) => setProfileError(error instanceof Error ? error.message : String(error)));
+                        }, children: "Create profile" }), customProfile && _jsx("button", { type: "button", className: "danger", disabled: disabled, onClick: () => {
+                            if (!confirm(`Delete voice profile “${customProfile.name}”?`))
+                                return;
+                            setProfileError('');
+                            void api(`/api/guilds/${guildId}/voice-profiles/${customProfile.id}`, { method: 'DELETE' })
+                                .then(() => onProfilesChange(profiles.filter((item) => item.id !== customProfile.id)))
+                                .catch((error) => setProfileError(error instanceof Error ? error.message : String(error)));
+                        }, children: "Delete profile" }), profileError && _jsx("small", { className: "profile-error", children: profileError })] }), _jsxs("div", { className: "voice-control-group", children: [_jsx("strong", { children: "Pitch and level" }), _jsxs("div", { className: "grid", children: [numeric('Pitch (semitones)', 'pitchSemitones', -12, 12, 0.1), numeric('Output volume', 'volume', 0, 3, 0.01)] })] }), _jsxs("div", { className: "voice-control-group", children: [_jsx("strong", { children: "Frequency shaping" }), _jsxs("div", { className: "grid", children: [numeric('High-pass frequency (Hz)', 'highpass', 20, 2_000, 1), numeric('Low-pass frequency (Hz)', 'lowpass', 1_000, 20_000, 1), numeric('Treble gain (dB)', 'trebleGain', -20, 20, 0.1), numeric('Treble frequency (Hz)', 'trebleFrequency', 1_000, 12_000, 1)] })] }), _jsxs("div", { className: "voice-control-group", children: [_jsx("strong", { children: "Compressor" }), _jsxs("div", { className: "grid", children: [numeric('Threshold (dB)', 'compressorThreshold', -60, 0, 0.1), numeric('Ratio', 'compressorRatio', 1, 20, 0.1), numeric('Attack (ms)', 'compressorAttack', 0.01, 2_000, 0.1), numeric('Release (ms)', 'compressorRelease', 0.01, 9_000, 0.1)] })] })] });
 }
 function parseVoiceFilter(filter) {
     if (filter.trim() === 'anull')
@@ -152,7 +171,11 @@ function BrowserChat({ guildId, voiceEnabled }) {
             if (value.type === 'status')
                 setStatus(value.status ?? value.reason ?? 'unknown');
             if (value.type === 'transcript' && value.text)
-                setMessages((current) => [...current, { speaker: value.speaker ?? 'assistant', text: value.text }]);
+                setMessages((current) => mergeBrowserTranscript(current, {
+                    speaker: value.speaker ?? 'assistant',
+                    text: value.text,
+                    final: value.final === true
+                }));
             if (value.type === 'audio' && value.data)
                 void audio.enqueue(value.data);
         };
@@ -162,12 +185,40 @@ function BrowserChat({ guildId, voiceEnabled }) {
     const send = () => {
         if (!text.trim() || socket?.readyState !== WebSocket.OPEN)
             return;
-        setMessages((current) => [...current, { speaker: 'user', text: text.trim() }]);
+        setMessages((current) => [...current, { speaker: 'user', text: text.trim(), final: true }]);
         socket.send(JSON.stringify({ type: 'text', text: text.trim(), requestId: crypto.randomUUID() }));
         setText('');
     };
     return _jsxs("section", { className: "chat", children: [_jsxs("div", { className: "chat-status", children: [_jsx("span", { className: status === 'connected' ? 'online' : '' }), status] }), _jsxs("div", { className: "messages", children: [messages.length === 0 && _jsx("div", { className: "empty", children: "Start a conversation using this server's personality." }), messages.map((message, index) => _jsx("div", { className: `bubble ${message.speaker}`, children: message.text }, index))] }), _jsxs("div", { className: "composer", children: [_jsx("button", { className: recording ? 'recording' : '', disabled: !voiceEnabled, onPointerDown: () => void startMicrophone(socket).then(() => setRecording(true)), onPointerUp: () => { stopMicrophone(socket); setRecording(false); }, children: _jsx(Mic, {}) }), _jsx("input", { value: text, placeholder: "Message Giada\u2026", onChange: (e) => setText(e.target.value), onKeyDown: (e) => { if (e.key === 'Enter')
                             send(); } }), _jsx("button", { onClick: send, children: _jsx(Send, {}) })] })] });
+}
+function mergeBrowserTranscript(current, incoming) {
+    const normalized = incoming.text.replace(/\s+/g, ' ').trim();
+    if (!normalized)
+        return current;
+    const next = [...current];
+    const last = next[next.length - 1];
+    if (last?.speaker === incoming.speaker && last.final && normalized === last.text)
+        return current;
+    if (last?.speaker === incoming.speaker && !last.final) {
+        next[next.length - 1] = { ...last, text: appendBrowserTranscript(last.text, normalized), final: incoming.final };
+        return next.slice(-100);
+    }
+    next.push({ ...incoming, text: normalized });
+    return next.slice(-100);
+}
+function appendBrowserTranscript(previous, incoming) {
+    if (incoming.startsWith(previous))
+        return incoming;
+    if (previous.endsWith(incoming))
+        return previous;
+    const previousLast = previous.at(-1) ?? '';
+    const incomingFirst = incoming.at(0) ?? '';
+    const needsSpace = !previous.endsWith(' ') && !incoming.startsWith(' ')
+        && !/^[,.;:!?)]$/.test(incomingFirst) && previousLast !== '('
+        && ((/[\p{L}\p{N}"']$/u.test(previousLast) && /^[\p{L}\p{N}"'(]$/u.test(incomingFirst))
+            || (/[.!?]$/.test(previousLast) && /^[\p{L}\p{N}"'(]$/u.test(incomingFirst)));
+    return `${previous}${needsSpace ? ' ' : ''}${incoming}`;
 }
 let activeMic = null;
 async function startMicrophone(socket) {

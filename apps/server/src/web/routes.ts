@@ -85,7 +85,7 @@ export async function registerWebRoutes(app: FastifyInstance, config: AppConfig,
     const context = await authorizeGuild(request, reply, store, config);
     if (!context) return;
     const runtime = await store.getGuildRuntime(context.guild.id);
-    return { runtime, credentials: await store.listCredentials(context.guild.id), usage: await store.getUsage(context.guild.id), subscription: await store.getSubscription(context.guild.id) };
+    return { runtime, credentials: await store.listCredentials(context.guild.id), voiceProfiles: await store.listVoiceChangerProfiles(context.guild.id), usage: await store.getUsage(context.guild.id), subscription: await store.getSubscription(context.guild.id) };
   });
 
   app.put('/api/guilds/:guildId/settings', async (request, reply) => {
@@ -93,6 +93,29 @@ export async function registerWebRoutes(app: FastifyInstance, config: AppConfig,
     if (!context) return;
     const body = z.object({ settings: z.unknown().optional(), personality: z.unknown().optional() }).parse(request.body);
     return { runtime: await store.updateGuildConfig(context.guild.id, body, context.auth.user.id) };
+  });
+
+  app.post('/api/guilds/:guildId/voice-profiles', async (request, reply) => {
+    const context = await authorizeGuild(request, reply, store, config, true);
+    if (!context) return;
+    const body = z.object({
+      name: z.string().trim().min(1).max(80),
+      ffmpegFilter: z.string().trim().min(1).max(2000)
+    }).parse(request.body);
+    try {
+      return { profile: await store.createVoiceChangerProfile(context.guild.id, body, context.auth.user.id) };
+    } catch (error) {
+      if (isUniqueViolation(error)) return reply.code(409).send({ error: 'voice_profile_name_exists' });
+      throw error;
+    }
+  });
+
+  app.delete('/api/guilds/:guildId/voice-profiles/:profileId', async (request, reply) => {
+    const context = await authorizeGuild(request, reply, store, config, true);
+    if (!context) return;
+    const profileId = z.string().uuid().parse((request.params as { profileId: string }).profileId);
+    if (!await store.deleteVoiceChangerProfile(context.guild.id, profileId)) return reply.code(404).send({ error: 'voice_profile_not_found' });
+    return { ok: true };
   });
 
   app.post('/api/guilds/:guildId/avatar', async (request, reply) => {
@@ -428,6 +451,10 @@ function requireOAuthConfig(config: AppConfig) {
 
 function publicUser(user: DiscordUser) {
   return { id: user.id, username: user.username, avatar: user.avatar ?? null };
+}
+
+function isUniqueViolation(error: unknown) {
+  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === '23505');
 }
 
 async function validateCredential(config: AppConfig, provider: CredentialProvider, value: string) {

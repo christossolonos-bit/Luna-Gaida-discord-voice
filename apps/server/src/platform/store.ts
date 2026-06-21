@@ -5,7 +5,7 @@ import type { PoolClient } from 'pg';
 import { personalitySchema, type PersonalityProfile } from '../personality/service.js';
 import type { MemoryRecord, MemoryStore, MemoryWriteInput } from '../memory/types.js';
 import { FREE_FEATURES, PAID_FEATURES, PRIVATE_FEATURES, parsePlanFeatures, type PlanFeatures } from './features.js';
-import { guildCredentials, guildSettings, guilds, memoriesV2, plans, providerKeys, sessions, stripeEvents, subscriptions, usageCycles, usageLedger, users } from './schema.js';
+import { guildCredentials, guildSettings, guilds, memoriesV2, plans, providerKeys, sessions, stripeEvents, subscriptions, usageCycles, usageLedger, users, voiceChangerProfiles } from './schema.js';
 import { guildPersonalitySchema, guildSettingsSchema, type CredentialProvider, type GuildPersonality, type GuildSettings, type UsageKind } from './types.js';
 import type { PlatformDatabaseClient } from './database.js';
 import type { SecretBox } from './secrets.js';
@@ -201,6 +201,27 @@ export class PlatformStore {
       .onConflictDoUpdate({ target: guildSettings.guildId, set: { settings, personality, updatedBy: userId, updatedAt: new Date() } });
     await this.notifyGuild(guildId);
     return this.getGuildRuntime(guildId);
+  }
+
+  async listVoiceChangerProfiles(guildId: string) {
+    return this.database.db.select().from(voiceChangerProfiles)
+      .where(eq(voiceChangerProfiles.guildId, guildId)).orderBy(asc(voiceChangerProfiles.name));
+  }
+
+  async createVoiceChangerProfile(guildId: string, input: { name: string; ffmpegFilter: string }, userId: string) {
+    const rows = await this.database.db.insert(voiceChangerProfiles).values({
+      guildId,
+      name: input.name,
+      ffmpegFilter: input.ffmpegFilter,
+      createdBy: userId
+    }).returning();
+    return rows[0]!;
+  }
+
+  async deleteVoiceChangerProfile(guildId: string, id: string) {
+    const rows = await this.database.db.delete(voiceChangerProfiles)
+      .where(and(eq(voiceChangerProfiles.guildId, guildId), eq(voiceChangerProfiles.id, id))).returning({ id: voiceChangerProfiles.id });
+    return rows.length > 0;
   }
 
   async putCredential(guildId: string, provider: CredentialProvider, value: string) {

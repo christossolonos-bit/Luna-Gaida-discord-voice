@@ -17,9 +17,12 @@ interface RuntimePayload {
     personality: Personality;
   };
   credentials: Array<{ provider: string; fingerprint: string }>;
+  voiceProfiles: VoiceProfile[];
   usage: { unlimited: boolean; messagesUsed: number; messageLimit: number; creditsUsed: number; creditLimit: number };
   subscription: { status: string; currentPeriodEnd: string } | null;
 }
+
+interface VoiceProfile { id: string; name: string; ffmpegFilter: string }
 
 interface GuildSettings {
   listeningChannelIds: string[];
@@ -143,7 +146,7 @@ function General({ guildId, payload, onSave }: { guildId: string; payload: Runti
     </Section>
     <Section title="Voice changer" description="FFmpeg filter applied to generated speech, not music." icon={<Volume2 />}>
       <Toggle label="Enable voice changer" detail={state.runtime.features.voiceChanger ? 'Applied to Discord and browser voice.' : 'Not available on this plan.'} value={settings.voiceChanger.enabled} disabled={!state.runtime.features.voiceChanger} onChange={(enabled) => set({ voiceChanger: { ...settings.voiceChanger, enabled } })} />
-      <VoiceChangerEditor value={settings.voiceChanger} disabled={!state.runtime.features.voiceChanger} onChange={(voiceChanger) => set({ voiceChanger })} />
+      <VoiceChangerEditor guildId={guildId} value={settings.voiceChanger} profiles={state.voiceProfiles} disabled={!state.runtime.features.voiceChanger} onProfilesChange={(voiceProfiles) => setState({ ...state, voiceProfiles })} onChange={(voiceChanger) => set({ voiceChanger })} />
     </Section>
     <button className="primary">Save changes</button>
   </form>;
@@ -166,21 +169,43 @@ const voicePresets = [
   { name: 'anime-girl', label: 'Anime girl', enabled: true, values: defaultVoiceValues }
 ];
 
-function VoiceChangerEditor({ value, disabled, onChange }: { value: GuildSettings['voiceChanger']; disabled: boolean; onChange: (value: GuildSettings['voiceChanger']) => void }) {
+function VoiceChangerEditor({ guildId, value, profiles, disabled, onChange, onProfilesChange }: { guildId: string; value: GuildSettings['voiceChanger']; profiles: VoiceProfile[]; disabled: boolean; onChange: (value: GuildSettings['voiceChanger']) => void; onProfilesChange: (profiles: VoiceProfile[]) => void }) {
+  const [profileError, setProfileError] = useState('');
   const values = parseVoiceFilter(value.ffmpegFilter);
-  const profile = voicePresets.some((preset) => preset.name === value.name) ? value.name : 'custom';
+  const customProfile = profiles.find((item) => item.name === value.name && item.ffmpegFilter === value.ffmpegFilter);
+  const builtinProfile = voicePresets.find((preset) => preset.name === value.name);
+  const selectedProfile = customProfile ? `custom:${customProfile.id}` : builtinProfile ? `builtin:${builtinProfile.name}` : 'unsaved';
   const update = (patch: Partial<VoiceProfileValues>) => {
-    const name = profile === 'custom' ? value.name : `${value.name}-custom`;
+    const name = selectedProfile === 'unsaved' || customProfile ? value.name : `${value.name}-custom`;
     onChange({ ...value, name, ffmpegFilter: buildVoiceFilter({ ...values, ...patch }) });
   };
   const numeric = (label: string, key: keyof VoiceProfileValues, min: number, max: number, step: number) => <Field label={label}><input disabled={disabled} type="number" min={min} max={max} step={step} value={values[key]} onChange={(event) => update({ [key]: Number(event.target.value) })} /></Field>;
   return <div className="voice-editor">
     <div className="grid">
-      <Field label="Current profile"><select disabled={disabled} value={profile} onChange={(event) => {
-        const preset = voicePresets.find((item) => item.name === event.target.value);
+      <Field label="Current profile"><select disabled={disabled} value={selectedProfile} onChange={(event) => {
+        const [kind, id] = event.target.value.split(':');
+        const preset = kind === 'builtin' ? voicePresets.find((item) => item.name === id) : undefined;
+        const saved = kind === 'custom' ? profiles.find((item) => item.id === id) : undefined;
         if (preset) onChange({ enabled: preset.enabled, name: preset.name, ffmpegFilter: preset.name === 'bypass' ? 'anull' : buildVoiceFilter(preset.values) });
-      }}>{voicePresets.map((preset) => <option key={preset.name} value={preset.name}>{preset.label}</option>)}{profile === 'custom' && <option value="custom">Custom ({value.name})</option>}</select></Field>
+        if (saved) onChange({ enabled: true, name: saved.name, ffmpegFilter: saved.ffmpegFilter });
+      }}>{voicePresets.map((preset) => <option key={preset.name} value={`builtin:${preset.name}`}>{preset.label}</option>)}{profiles.map((item) => <option key={item.id} value={`custom:${item.id}`}>{item.name}</option>)}{selectedProfile === 'unsaved' && <option value="unsaved">Unsaved ({value.name})</option>}</select></Field>
       <Field label="Profile name"><input disabled={disabled} value={value.name} maxLength={80} onChange={(event) => onChange({ ...value, name: event.target.value })} /></Field>
+    </div>
+    <div className="voice-profile-actions">
+      <button type="button" disabled={disabled || !value.name.trim()} onClick={() => {
+        setProfileError('');
+        void api<{ profile: VoiceProfile }>(`/api/guilds/${guildId}/voice-profiles`, { method: 'POST', body: json({ name: value.name, ffmpegFilter: value.ffmpegFilter }) })
+          .then(({ profile }) => onProfilesChange([...profiles, profile].sort((a, b) => a.name.localeCompare(b.name))))
+          .catch((error) => setProfileError(error instanceof Error ? error.message : String(error)));
+      }}>Create profile</button>
+      {customProfile && <button type="button" className="danger" disabled={disabled} onClick={() => {
+        if (!confirm(`Delete voice profile “${customProfile.name}”?`)) return;
+        setProfileError('');
+        void api(`/api/guilds/${guildId}/voice-profiles/${customProfile.id}`, { method: 'DELETE' })
+          .then(() => onProfilesChange(profiles.filter((item) => item.id !== customProfile.id)))
+          .catch((error) => setProfileError(error instanceof Error ? error.message : String(error)));
+      }}>Delete profile</button>}
+      {profileError && <small className="profile-error">{profileError}</small>}
     </div>
     <div className="voice-control-group"><strong>Pitch and level</strong><div className="grid">{numeric('Pitch (semitones)', 'pitchSemitones', -12, 12, 0.1)}{numeric('Output volume', 'volume', 0, 3, 0.01)}</div></div>
     <div className="voice-control-group"><strong>Frequency shaping</strong><div className="grid">{numeric('High-pass frequency (Hz)', 'highpass', 20, 2_000, 1)}{numeric('Low-pass frequency (Hz)', 'lowpass', 1_000, 20_000, 1)}{numeric('Treble gain (dB)', 'trebleGain', -20, 20, 0.1)}{numeric('Treble frequency (Hz)', 'trebleFrequency', 1_000, 12_000, 1)}</div></div>
@@ -257,7 +282,7 @@ function Admin() {
 }
 
 function BrowserChat({ guildId, voiceEnabled }: { guildId: string; voiceEnabled: boolean }) {
-  const [messages, setMessages] = useState<Array<{ speaker: string; text: string }>>([]);
+  const [messages, setMessages] = useState<BrowserChatMessage[]>([]);
   const [text, setText] = useState('');
   const [status, setStatus] = useState('connecting');
   const [socket, setSocket] = useState<WebSocket | null>(null);
@@ -269,9 +294,13 @@ function BrowserChat({ guildId, voiceEnabled }: { guildId: string; voiceEnabled:
     ws.onopen = () => { setStatus('connected'); ws.send(JSON.stringify({ type: 'connect', surface: 'browser' })); };
     ws.onclose = (event) => setStatus(event.reason || 'disconnected');
     ws.onmessage = (event) => {
-      const value = JSON.parse(event.data) as { type: string; speaker?: string; text?: string; data?: string; status?: string; reason?: string };
+      const value = JSON.parse(event.data) as { type: string; speaker?: string; text?: string; final?: boolean; data?: string; status?: string; reason?: string };
       if (value.type === 'status') setStatus(value.status ?? value.reason ?? 'unknown');
-      if (value.type === 'transcript' && value.text) setMessages((current) => [...current, { speaker: value.speaker ?? 'assistant', text: value.text! }]);
+      if (value.type === 'transcript' && value.text) setMessages((current) => mergeBrowserTranscript(current, {
+        speaker: value.speaker ?? 'assistant',
+        text: value.text!,
+        final: value.final === true
+      }));
       if (value.type === 'audio' && value.data) void audio.enqueue(value.data);
     };
     setSocket(ws);
@@ -279,11 +308,39 @@ function BrowserChat({ guildId, voiceEnabled }: { guildId: string; voiceEnabled:
   }, [guildId, audio]);
   const send = () => {
     if (!text.trim() || socket?.readyState !== WebSocket.OPEN) return;
-    setMessages((current) => [...current, { speaker: 'user', text: text.trim() }]);
+    setMessages((current) => [...current, { speaker: 'user', text: text.trim(), final: true }]);
     socket.send(JSON.stringify({ type: 'text', text: text.trim(), requestId: crypto.randomUUID() }));
     setText('');
   };
   return <section className="chat"><div className="chat-status"><span className={status === 'connected' ? 'online' : ''} />{status}</div><div className="messages">{messages.length === 0 && <div className="empty">Start a conversation using this server's personality.</div>}{messages.map((message, index) => <div key={index} className={`bubble ${message.speaker}`}>{message.text}</div>)}</div><div className="composer"><button className={recording ? 'recording' : ''} disabled={!voiceEnabled} onPointerDown={() => void startMicrophone(socket!).then(() => setRecording(true))} onPointerUp={() => { stopMicrophone(socket); setRecording(false); }}><Mic /></button><input value={text} placeholder="Message Giada…" onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') send(); }} /><button onClick={send}><Send /></button></div></section>;
+}
+
+interface BrowserChatMessage { speaker: string; text: string; final: boolean }
+
+function mergeBrowserTranscript(current: BrowserChatMessage[], incoming: BrowserChatMessage) {
+  const normalized = incoming.text.replace(/\s+/g, ' ').trim();
+  if (!normalized) return current;
+  const next = [...current];
+  const last = next[next.length - 1];
+  if (last?.speaker === incoming.speaker && last.final && normalized === last.text) return current;
+  if (last?.speaker === incoming.speaker && !last.final) {
+    next[next.length - 1] = { ...last, text: appendBrowserTranscript(last.text, normalized), final: incoming.final };
+    return next.slice(-100);
+  }
+  next.push({ ...incoming, text: normalized });
+  return next.slice(-100);
+}
+
+function appendBrowserTranscript(previous: string, incoming: string) {
+  if (incoming.startsWith(previous)) return incoming;
+  if (previous.endsWith(incoming)) return previous;
+  const previousLast = previous.at(-1) ?? '';
+  const incomingFirst = incoming.at(0) ?? '';
+  const needsSpace = !previous.endsWith(' ') && !incoming.startsWith(' ')
+    && !/^[,.;:!?)]$/.test(incomingFirst) && previousLast !== '('
+    && ((/[\p{L}\p{N}"']$/u.test(previousLast) && /^[\p{L}\p{N}"'(]$/u.test(incomingFirst))
+      || (/[.!?]$/.test(previousLast) && /^[\p{L}\p{N}"'(]$/u.test(incomingFirst)));
+  return `${previous}${needsSpace ? ' ' : ''}${incoming}`;
 }
 
 let activeMic: { stream: MediaStream; context: AudioContext; processor: ScriptProcessorNode } | null = null;

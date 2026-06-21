@@ -18,3 +18,24 @@
 .voice-control-group .field {
   margin-bottom: 14px;
 }
+
+.voice-profile-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.voice-profile-actions button {
+  background: #171d2b;
+  border: 1px solid #343d53;
+  border-radius: 7px;
+  color: #cbd2e2;
+  cursor: pointer;
+  padding: 9px 12px;
+}
+
+.voice-profile-actions button.danger,
+.profile-error {
+  color: #ff9b9b;
+}

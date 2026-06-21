@@ -60,6 +60,15 @@ export const guildSettings = pgTable('guild_settings_v2', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 });
 
+export const voiceChangerProfiles = pgTable('voice_changer_profiles', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  guildId: text('guild_id').notNull().references(() => guilds.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  ffmpegFilter: text('ffmpeg_filter').notNull(),
+  createdBy: text('created_by'),
+  ...timestamps
+}, (table) => [uniqueIndex('voice_changer_profiles_guild_name_idx').on(table.guildId, table.name)]);
+
 export const guildCredentials = pgTable('guild_credentials', {
   guildId: text('guild_id').notNull().references(() => guilds.id, { onDelete: 'cascade' }),
   provider: text('provider', { enum: ['gemini', 'groq', 'nvidia'] }).notNull(),
