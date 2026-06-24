@@ -17,7 +17,7 @@ interface GroqMessage {
 
 interface GroqResponse {
   choices?: Array<{ message?: { content?: string | null; tool_calls?: GroqToolCall[] } }>;
-  error?: { message?: string };
+  error?: { message?: string; code?: string; failed_generation?: string };
 }
 
 export class GroqTextClient {
@@ -36,7 +36,13 @@ export class GroqTextClient {
     ];
     let explicitKey = input.apiKey;
     for (let toolRound = 0; toolRound < 5; toolRound += 1) {
-      const result = await this.requestWithRotation(messages, input.tools ?? [], explicitKey);
+      let result;
+      try {
+        result = await this.requestWithRotation(messages, input.tools ?? [], explicitKey);
+      } catch (error) {
+        if (!isGroqFunctionCallGenerationError(error) || !(input.tools?.length)) throw error;
+        result = await this.requestWithRotation(messages, [], explicitKey);
+      }
       explicitKey = result.explicitKey;
       const message = result.payload.choices?.[0]?.message;
       const calls = message?.tool_calls ?? [];
@@ -55,15 +61,15 @@ export class GroqTextClient {
   }
 
   private async requestWithRotation(messages: GroqMessage[], tools: Array<Record<string, unknown>>, explicitKey?: string) {
-    const attempted = new Set<string>();
-    const maxAttempts = explicitKey ? 1 : 8;
+    const attemptedKeyIds = new Set<string>();
     let lastError: Error | null = null;
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    for (let attempt = 0; attempt < (explicitKey ? 1 : 8); attempt += 1) {
       const selected = explicitKey
         ? { id: 'byok', value: explicitKey }
-        : await this.pickSharedKey(attempted);
-      if (!selected) break;
-      attempted.add(selected.id);
+        : await this.platform?.pickProviderKey('groq');
+      if (!selected || attemptedKeyIds.has(selected.id)) break;
+      attemptedKeyIds.add(selected.id);
+
       const response = await fetch(this.config.GROQ_API_URL, {
         method: 'POST',
         headers: { Authorization: `Bearer ${selected.value}`, 'Content-Type': 'application/json' },
@@ -80,24 +86,34 @@ export class GroqTextClient {
       let payload: GroqResponse;
       try { payload = JSON.parse(raw) as GroqResponse; } catch { payload = {}; }
       if (response.ok) return { payload, explicitKey };
-      lastError = new Error(`Groq HTTP ${response.status}: ${payload.error?.message ?? raw.slice(0, 300)}`);
-      if (response.status !== 429 || explicitKey) throw lastError;
-      if (this.platform) {
-        await this.platform.coolDownProviderKey(selected.id, parseRetryAfter(response.headers.get('retry-after')));
-      }
+      const detail = payload.error?.failed_generation?.trim();
+      lastError = new GroqRequestError(
+        response.status,
+        payload.error?.code,
+        `Groq HTTP ${response.status}: ${payload.error?.message ?? raw.slice(0, 300)}${detail ? ` Failed generation: ${detail.slice(0, 500)}` : ''}`
+      );
+      if (response.status !== 429 || explicitKey || !this.platform) throw lastError;
+      await this.platform.coolDownProviderKey(selected.id, parseRetryAfter(response.headers.get('retry-after')));
     }
     throw lastError ?? new Error('No Groq API key is available');
   }
+}
 
-  private async pickSharedKey(attempted: Set<string>) {
-    if (this.platform) {
-      for (let i = 0; i < 8; i += 1) {
-        const key = await this.platform.pickProviderKey('groq');
-        if (!key || !attempted.has(key.id)) return key;
-      }
-    }
-    return null;
+class GroqRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string | undefined,
+    message: string
+  ) {
+    super(message);
+    this.name = 'GroqRequestError';
   }
+}
+
+function isGroqFunctionCallGenerationError(error: unknown) {
+  return error instanceof GroqRequestError
+    && error.status === 400
+    && (error.code === 'tool_use_failed' || /failed to call a function/i.test(error.message));
 }
 
 function normalizeDeclaration(declaration: Record<string, unknown>) {

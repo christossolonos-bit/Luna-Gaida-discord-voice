@@ -1,12 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   calculateNvidiaRetryDelay,
   extractMessageText,
+  generateDiscordTextWithNvidia,
   isRetryableNvidiaStatus,
   toOpenAiToolDeclaration
 } from '../src/plugins/discord/nvidiaVision.js';
+import type { AppConfig } from '../src/config/env.js';
 
 describe('NVIDIA vision response parsing', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('returns plain string content', () => {
     expect(extractMessageText('A detailed image description.')).toBe('A detailed image description.');
   });
@@ -58,5 +64,41 @@ describe('NVIDIA vision response parsing', () => {
         }
       }
     });
+  });
+
+  it('executes a side-effect tool once and disables tools on the follow-up round', async () => {
+    const toolCall = {
+      id: 'gif-1',
+      type: 'function',
+      function: { name: 'sendDiscordGif', arguments: '{"query":"happy dance"}' }
+    };
+    const duplicateToolCall = { ...toolCall, id: 'gif-2' };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: null, tool_calls: [toolCall, duplicateToolCall] }, finish_reason: 'tool_calls' }]
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: 'Done.' }, finish_reason: 'stop' }]
+      }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const execute = vi.fn(async (calls: typeof toolCall[]) => calls.map((call) => ({
+      id: call.id,
+      name: call.function.name,
+      response: { ok: true }
+    })));
+
+    await expect(generateDiscordTextWithNvidia({
+      NVIDIA_NIM_URL: 'https://nvidia.test/chat/completions',
+      NVIDIA_IMAGE_MODEL: 'moonshotai/kimi-k2.6',
+      nvidiaApiKey: 'test-key'
+    } as AppConfig & { nvidiaApiKey: string }, 'System', [{ text: 'User' }], true, {
+      declarations: [{ name: 'sendDiscordGif', parameters: { type: 'OBJECT' } }],
+      execute
+    })).resolves.toBe('Done.');
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]?.[0]).toHaveLength(1);
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(secondBody.tools).toBeUndefined();
   });
 });

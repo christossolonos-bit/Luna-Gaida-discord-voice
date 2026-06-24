@@ -150,6 +150,7 @@ export async function generateDiscordTextWithNvidia(
     { role: 'user', content: prompt }
   ];
   const openAiTools = tools?.declarations.map(toOpenAiToolDeclaration) ?? [];
+  const usedSideEffectTools = new Set<string>();
 
   for (let toolRound = 0; toolRound < 8; toolRound += 1) {
     const response = await fetchNvidiaWithRetry(config.NVIDIA_NIM_URL, () => ({
@@ -162,7 +163,7 @@ export async function generateDiscordTextWithNvidia(
       body: JSON.stringify({
         model: config.NVIDIA_IMAGE_MODEL,
         messages,
-        ...(openAiTools.length ? { tools: openAiTools, tool_choice: 'auto' } : {}),
+        ...(openAiTools.length && toolRound === 0 ? { tools: openAiTools, tool_choice: 'auto' } : {}),
         max_tokens: 2048,
         temperature: 0.8,
         top_p: 1,
@@ -195,7 +196,28 @@ export async function generateDiscordTextWithNvidia(
         content: extractMessageText(message?.content) || null,
         tool_calls: toolCalls
       });
-      const results = await tools.execute(toolCalls);
+      const executableCalls: NvidiaToolCall[] = [];
+      const blockedResults = new Map<string, { id: string; name: string; response: Record<string, unknown> }>();
+      for (const call of toolCalls) {
+        const name = call.function.name;
+        if (isNvidiaSideEffectTool(name) && usedSideEffectTools.has(name)) {
+          blockedResults.set(call.id, {
+            id: call.id,
+            name,
+            response: { ok: false, error: 'duplicate_side_effect_tool_call' }
+          });
+          continue;
+        }
+        if (isNvidiaSideEffectTool(name)) usedSideEffectTools.add(name);
+        executableCalls.push(call);
+      }
+      const executedResults = executableCalls.length ? await tools.execute(executableCalls) : [];
+      const executedById = new Map(executedResults.map((result) => [result.id, result]));
+      const results = toolCalls.map((call) => executedById.get(call.id) ?? blockedResults.get(call.id) ?? {
+        id: call.id,
+        name: call.function.name,
+        response: { ok: false, error: 'missing_tool_result' }
+      });
       for (const result of results) {
         messages.push({
           role: 'tool',
@@ -219,6 +241,13 @@ export async function generateDiscordTextWithNvidia(
     return text;
   }
   throw new Error('NVIDIA NIM text fallback exceeded the tool-call round limit');
+}
+
+function isNvidiaSideEffectTool(name: string) {
+  return name === 'sendDiscordGif'
+    || name === 'addDiscordReaction'
+    || name === 'joinRequesterVoiceChannel'
+    || name === 'leaveVoiceChannel';
 }
 
 export function toOpenAiToolDeclaration(declaration: Record<string, unknown>) {

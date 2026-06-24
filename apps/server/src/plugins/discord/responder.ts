@@ -318,11 +318,26 @@ export class DiscordTextResponder {
         if (reservation) await this.platform!.reconcileUsage(reservation, 1, true);
         return { text };
       } catch (error) {
+        logger.warn('Groq Discord text generation failed; attempting NVIDIA NIM fallback', {
+          guildId: input.guildId,
+          channelId: input.channelId,
+          model: this.config.GROQ_MODEL,
+          credential: provider.route.credential,
+          routeReason: provider.route.reason,
+          nsfwAllowed: input.channelNsfw,
+          error: error instanceof Error ? error.message : String(error)
+        });
         try {
           const text = await this.generateKimiFallback(systemInstruction, parts, input);
           if (reservation) await this.platform!.reconcileUsage(reservation, 1, true);
           return { text };
-        } catch {
+        } catch (fallbackError) {
+          logger.warn('NVIDIA NIM fallback after Groq failure also failed', {
+            guildId: input.guildId,
+            channelId: input.channelId,
+            model: this.config.NVIDIA_IMAGE_MODEL,
+            error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+          });
           if (reservation) await this.platform!.reconcileUsage(reservation, 0, false);
           throw error;
         }
