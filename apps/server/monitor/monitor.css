@@ -81,15 +81,81 @@ h1 {
 main {
   display: grid;
   grid-template-columns: 320px 1fr;
+  grid-template-rows: auto auto;
   gap: 1rem;
   padding: 1rem;
   max-width: 1200px;
   margin: 0 auto;
 }
 
+main > .card:nth-child(1) {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+main > .card:nth-child(2) {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+main > .card:nth-child(3) {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.memory-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.memory-user {
+  padding: 0.65rem 0.75rem;
+  background: #061222;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.memory-user h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.9rem;
+  color: var(--text-bright);
+}
+
+.memory-user time {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
+.memory-user pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 0.82rem;
+  color: var(--text);
+  line-height: 1.35;
+}
+
 @media (max-width: 800px) {
   main {
     grid-template-columns: 1fr;
+    grid-template-rows: auto;
+  }
+
+  main > .card:nth-child(1),
+  main > .card:nth-child(2),
+  main > .card:nth-child(3) {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  #feed {
+    max-height: none;
   }
 }
 

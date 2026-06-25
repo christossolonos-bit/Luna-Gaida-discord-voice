@@ -1,6 +1,8 @@
 import Database from 'better-sqlite3';
 import { dirname, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 export interface VoiceUserMemory {
   guildId: string;
@@ -42,6 +44,45 @@ export class UserVoiceMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_luna_voice_user_memory_updated
         ON luna_voice_user_memory(guild_id, updated_at DESC);
     `);
+    this.importLegacyRowsIfEmpty();
+  }
+
+  /** Older builds stored voice memory under apps/server/data when cwd differed. */
+  private importLegacyRowsIfEmpty() {
+    const count = (this.db.prepare('SELECT COUNT(*) AS count FROM luna_voice_user_memory').get() as { count: number }).count;
+    if (count > 0) return;
+
+    const moduleDir = dirname(fileURLToPath(import.meta.url));
+    const legacyPath = resolve(moduleDir, '../../../data/giada.sqlite');
+    if (!existsSync(legacyPath) || resolve(legacyPath) === resolve(this.db.name)) return;
+
+    let legacy: Database.Database | null = null;
+    try {
+      legacy = new Database(legacyPath, { readonly: true });
+      const hasTable = legacy.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'luna_voice_user_memory'
+      `).get();
+      if (!hasTable) return;
+
+      const rows = legacy.prepare(`
+        SELECT guild_id, user_id, display_name, summary, updated_at
+        FROM luna_voice_user_memory
+      `).all() as VoiceUserMemoryRow[];
+      if (!rows.length) return;
+
+      const insert = this.db.prepare(`
+        INSERT INTO luna_voice_user_memory (guild_id, user_id, display_name, summary, updated_at)
+        VALUES (@guild_id, @user_id, @display_name, @summary, @updated_at)
+      `);
+      const importRows = this.db.transaction((batch: VoiceUserMemoryRow[]) => {
+        for (const row of batch) insert.run(row);
+      });
+      importRows(rows);
+    } catch {
+      // ignore unreadable legacy database
+    } finally {
+      legacy?.close();
+    }
   }
 
   get(guildId: string, userId: string): VoiceUserMemory | null {
@@ -81,6 +122,16 @@ export class UserVoiceMemoryStore {
       ORDER BY updated_at DESC
       LIMIT ?
     `).all(guildId, limit) as VoiceUserMemoryRow[];
+    return rows.map(mapRow);
+  }
+
+  listAll(limit = 100): VoiceUserMemory[] {
+    const rows = this.db.prepare(`
+      SELECT guild_id, user_id, display_name, summary, updated_at
+      FROM luna_voice_user_memory
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `).all(limit) as VoiceUserMemoryRow[];
     return rows.map(mapRow);
   }
 }

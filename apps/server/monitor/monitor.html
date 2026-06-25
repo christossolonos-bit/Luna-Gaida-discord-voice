@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark" />
   <meta name="theme-color" content="#020810" />
   <title>Luna Live Monitor</title>
-  <link rel="stylesheet" href="/monitor/style.css?v=2" />
+  <link rel="stylesheet" href="/monitor/style.css?v=3" />
 </head>
 <body>
   <header>
@@ -26,10 +26,14 @@
       <div id="ptt-hint">Join voice with Luna first. Hold this button while speaking, then release to send.</div>
     </section>
     <section class="card">
+      <h2>Caller memory</h2>
+      <div id="memory-panel" class="memory-panel"><div class="empty">No saved caller notes yet.</div></div>
+    </section>
+    <section class="card">
       <h2>Live activity</h2>
       <div id="feed"><div class="empty">Waiting for events…</div></div>
     </section>
   </main>
-  <script src="/monitor/app.js?v=2"></script>
+  <script src="/monitor/app.js?v=3"></script>
 </body>
 </html>

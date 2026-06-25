@@ -15,7 +15,7 @@ import { isLikelyNonsenseTranscript, sanitizeVoiceReply } from './voiceReply.js'
 import type { LiveClientEvent, LiveInputEvent, LiveSurface, VoiceSpeakerContext } from './liveSession.js';
 import { UserVoiceMemoryStore } from '../memory/userVoiceMemory.js';
 import { updateUserVoiceMemory } from '../memory/updateUserVoiceMemory.js';
-import { buildVoiceCallContextBlock, recordParticipantNames } from './voiceCallContext.js';
+import { buildVoiceCallContextBlock, buildVoiceCallContextForMemory, recordParticipantNames } from './voiceCallContext.js';
 
 const INPUT_RATE = 16000;
 const DISCORD_RATE = 48000;
@@ -319,6 +319,11 @@ export class LocalVoiceSessionManager {
     if (this.config.LUNA_USER_VOICE_MEMORY && speaker) {
       const existing = this.userVoiceMemory.get(speaker.guildId, speaker.userId);
       const recentHistory = history.snapshot();
+      const memoryCallContext = buildVoiceCallContextForMemory({
+        speaker,
+        conversationBySpeaker: this.conversationBySpeaker,
+        participantNames: this.participantDisplayNames
+      });
       void updateUserVoiceMemory({
         store: this.userVoiceMemory,
         groq: this.groq,
@@ -329,13 +334,14 @@ export class LocalVoiceSessionManager {
         lunaReplied: cleaned,
         existingSummary: existing?.summary ?? null,
         recentHistory,
-        callContext: callContextBlock
+        callContext: memoryCallContext
       }).then((summary) => {
         if (summary?.trim()) {
           publishActivity({
             level: 'info',
             title: `Remembering ${speaker.displayName}`,
-            detail: summary
+            detail: summary,
+            meta: { userId: speaker.userId, guildId: speaker.guildId }
           });
         }
       }).catch((error) => {

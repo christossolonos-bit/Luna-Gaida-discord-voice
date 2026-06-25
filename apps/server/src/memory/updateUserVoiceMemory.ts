@@ -3,10 +3,10 @@ import type { GroqTextClient } from '../providers/groq.js';
 import { normalizeBulletSummary, type UserVoiceMemoryStore } from './userVoiceMemory.js';
 import { logger } from '../logging/logger.js';
 
-function formatHistoryForMemory(turns: ConversationTurn[]) {
+function formatHistoryForMemory(turns: ConversationTurn[], displayName: string) {
   if (!turns.length) return '(no prior turns this session)';
   return turns
-    .map((turn) => `${turn.role === 'user' ? 'User' : 'Luna'}: ${turn.text}`)
+    .map((turn) => `${turn.role === 'user' ? displayName : 'Luna'}: ${turn.text}`)
     .join('\n');
 }
 
@@ -22,29 +22,31 @@ export async function updateUserVoiceMemory(input: {
   recentHistory?: ConversationTurn[];
   callContext?: string | null;
 }) {
+  const subject = input.displayName.trim() || 'this user';
   const system = [
-    'You maintain short bullet notes about a Discord voice user for an assistant named Luna.',
-    'Learn from the user over time — merge new stable facts from recent chat history and the latest exchange.',
+    `You maintain short bullet notes about ONE Discord voice user: ${subject}.`,
+    'Learn only from what THAT person said about themselves, their preferences, and their questions.',
     'Rules:',
     '- Output ONLY bullet lines, each starting with "- "',
     '- Max 8 bullets, max 14 words per bullet',
-    '- Keep name, preferences, recurring topics, relationship cues, ongoing threads',
-    '- Note when this user asks about other people in the voice call or mentions them by name',
-    '- Refine bullets as you learn more; drop stale or duplicate bullets',
+    `- Every bullet must be about ${subject} only — never about someone else in the call`,
+    `- Do NOT copy another caller's job, pets, location, hobbies, or traits onto ${subject}`,
+    `- If ${subject} asks about another person, save meta bullets like "${subject} asked about Travis's dog" — not "owns Travis's dog"`,
+    '- Refine bullets as you learn more; drop stale, duplicate, or wrongly attributed bullets',
     '- No speculation, no meta commentary, no quotes from Luna',
-    '- If nothing new to remember, return the existing notes unchanged'
+    '- If nothing new to remember about this person, return the existing notes unchanged'
   ].join('\n');
 
   const userText = [
-    `Speaker display name: ${input.displayName}`,
+    `Subject (the ONLY person these notes describe): ${subject}`,
     `Saved notes from past sessions:\n${input.existingSummary?.trim() || '(none yet)'}`,
     '',
-    `Shared voice call context (other participants in this session):\n${input.callContext?.trim() || '(none)'}`,
+    `Other participants this session (reference only — do NOT save their facts under ${subject}):\n${input.callContext?.trim() || '(none)'}`,
     '',
-    `Recent voice chat this session:\n${formatHistoryForMemory(input.recentHistory ?? [])}`,
+    `Recent voice chat with ${subject} this session:\n${formatHistoryForMemory(input.recentHistory ?? [], subject)}`,
     '',
-    `Latest exchange:`,
-    `User said: ${input.userSaid}`,
+    'Latest exchange with this subject only:',
+    `${subject} said: ${input.userSaid}`,
     `Luna replied: ${input.lunaReplied}`
   ].join('\n');
 

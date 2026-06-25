@@ -1,4 +1,5 @@
 const feed = document.getElementById('feed');
+const memoryPanel = document.getElementById('memory-panel');
 const connection = document.getElementById('connection');
 const pttBtn = document.getElementById('ptt-btn');
 const events = new Map();
@@ -93,9 +94,24 @@ function bindPttButton() {
   });
 }
 
+function renderMemory(users) {
+  if (!users?.length) {
+    memoryPanel.innerHTML = '<div class="empty">No saved caller notes yet.</div>';
+    return;
+  }
+  memoryPanel.innerHTML = users.map((user) => `
+    <article class="memory-user">
+      <h3>${escapeHtml(user.displayName ?? user.userId)}</h3>
+      <time>Updated ${formatTime(user.updatedAt)}</time>
+      <pre>${escapeHtml(user.summary ?? '')}</pre>
+    </article>
+  `).join('');
+}
+
 async function refreshStatus() {
   try {
     const payload = await fetch('/monitor/status').then((r) => r.json());
+    renderMemory(payload.voiceMemory);
     const discord = payload.discord ?? {};
     const bot = discord.user?.tag ?? 'offline';
     document.getElementById('bot-name').innerHTML = `<strong>Bot:</strong> ${escapeHtml(bot)}`;

@@ -27,27 +27,16 @@ export function buildVoiceCallContextBlock(input: {
     ? rosterNames.join(', ')
     : 'no other humans detected in the channel';
 
-  const exchangeLines: string[] = [];
-  for (const [key, history] of conversationBySpeaker) {
-    if (key === currentKey) continue;
-    const name = participantNames.get(key) ?? 'Someone';
-    const turns = history.snapshot();
-    if (!turns.length) continue;
-    const recent = turns.slice(-4);
-    const parts = recent.map((turn) =>
-      turn.role === 'user' ? `said "${turn.text}"` : `Luna replied "${turn.text}"`
-    );
-    exchangeLines.push(`- ${name}: ${parts.join('; ')}`);
-  }
-
-  for (const other of others) {
-    const key = speakerKey(speaker.guildId, other.userId);
-    if (conversationBySpeaker.has(key)) continue;
-    exchangeLines.push(`- ${other.displayName}: in the call but has not spoken to Luna yet this session`);
-  }
+  const exchangeLines = buildOtherExchangeLines({
+    speaker,
+    currentKey,
+    others,
+    conversationBySpeaker,
+    participantNames
+  });
 
   const memoryBlock = otherMemoryNotes?.length
-    ? `\nPast notes about others in this call (from earlier sessions):\n${otherMemoryNotes.join('\n')}`
+    ? `\nPast notes about others in this call (from earlier sessions — NOT facts about ${speaker.displayName}):\n${otherMemoryNotes.join('\n')}`
     : '';
 
   return [
@@ -59,6 +48,60 @@ export function buildVoiceCallContextBlock(input: {
     exchangeLines.length ? exchangeLines.join('\n') : '(no one else has spoken to Luna yet this session)',
     memoryBlock
   ].join('\n');
+}
+
+/** Narrow call log for per-user memory updates — no other users' saved bullets. */
+export function buildVoiceCallContextForMemory(input: {
+  speaker: VoiceSpeakerContext;
+  conversationBySpeaker: Map<string, ConversationHistory>;
+  participantNames: Map<string, string>;
+}): string {
+  const currentKey = speakerKey(input.speaker.guildId, input.speaker.userId);
+  const exchangeLines = buildOtherExchangeLines({
+    speaker: input.speaker,
+    currentKey,
+    others: input.speaker.othersInCall ?? [],
+    conversationBySpeaker: input.conversationBySpeaker,
+    participantNames: input.participantNames
+  });
+
+  if (!exchangeLines.length) {
+    return '(no other participants spoke this session)';
+  }
+
+  return [
+    `Reference only — these lines are what OTHER people said, not ${input.speaker.displayName}:`,
+    exchangeLines.join('\n')
+  ].join('\n');
+}
+
+function buildOtherExchangeLines(input: {
+  speaker: VoiceSpeakerContext;
+  currentKey: string;
+  others: Array<{ userId: string; displayName: string }>;
+  conversationBySpeaker: Map<string, ConversationHistory>;
+  participantNames: Map<string, string>;
+}) {
+  const exchangeLines: string[] = [];
+  for (const [key, history] of input.conversationBySpeaker) {
+    if (key === input.currentKey) continue;
+    const name = input.participantNames.get(key) ?? 'Someone';
+    const turns = history.snapshot();
+    if (!turns.length) continue;
+    const recent = turns.slice(-4);
+    const parts = recent.map((turn) =>
+      turn.role === 'user' ? `said "${turn.text}"` : `Luna replied "${turn.text}"`
+    );
+    exchangeLines.push(`- ${name}: ${parts.join('; ')}`);
+  }
+
+  for (const other of input.others) {
+    const key = speakerKey(input.speaker.guildId, other.userId);
+    if (input.conversationBySpeaker.has(key)) continue;
+    exchangeLines.push(`- ${other.displayName}: in the call but has not spoken to Luna yet this session`);
+  }
+
+  return exchangeLines;
 }
 
 function speakerKey(guildId: string, userId: string) {

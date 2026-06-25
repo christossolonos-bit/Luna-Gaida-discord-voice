@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listActivity, subscribeActivity } from './activityFeed.js';
+import type { UserVoiceMemoryStore } from '../memory/userVoiceMemory.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -26,7 +27,8 @@ export interface MonitorPttHandlers {
 export async function registerMonitorRoutes(
   app: FastifyInstance,
   getDiscordStatus: () => unknown,
-  ptt?: MonitorPttHandlers
+  ptt?: MonitorPttHandlers,
+  voiceMemory?: UserVoiceMemoryStore
 ) {
   const dir = monitorDir();
 
@@ -76,7 +78,24 @@ export async function registerMonitorRoutes(
     time: new Date().toISOString(),
     discord: getDiscordStatus(),
     recent: listActivity(20),
-    pttAvailable: Boolean(ptt)
+    pttAvailable: Boolean(ptt),
+    voiceMemory: voiceMemory?.listAll(20).map((record) => ({
+      displayName: record.displayName,
+      userId: record.userId,
+      guildId: record.guildId,
+      summary: record.summary,
+      updatedAt: record.updatedAt
+    })) ?? []
+  }));
+
+  app.get('/monitor/memory', async () => ({
+    users: voiceMemory?.listAll(50).map((record) => ({
+      displayName: record.displayName,
+      userId: record.userId,
+      guildId: record.guildId,
+      summary: record.summary,
+      updatedAt: record.updatedAt
+    })) ?? []
   }));
 
   if (ptt) {

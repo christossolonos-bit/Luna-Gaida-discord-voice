@@ -100,9 +100,7 @@ export function loadConfig() {
     wakePhrases: parseWakePhrases(parsed.LUNA_WAKE_PHRASES),
     DISCORD_VOICE_CHANGER_CONFIG: resolveProjectFile(parsed.DISCORD_VOICE_CHANGER_CONFIG),
     allowedOrigins: parsed.GIADA_ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean),
-    databasePath: parsed.GIADA_DATABASE_URL.startsWith('file:')
-      ? parsed.GIADA_DATABASE_URL.slice('file:'.length)
-      : parsed.GIADA_DATABASE_URL,
+    databasePath: resolveDatabasePath(parsed.GIADA_DATABASE_URL),
     webDistPath: resolveProjectFile(parsed.GIADA_WEB_DIST),
     uploadDir: resolveProjectFile(parsed.GIADA_UPLOAD_DIR)
   };
@@ -117,4 +115,12 @@ function resolveProjectFile(path: string) {
     resolve(here, '../../../../../', path)
   ];
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
+}
+
+/** SQLite path anchored to the repo root so voice memory is not split across cwd folders. */
+function resolveDatabasePath(url: string) {
+  const path = url.startsWith('file:') ? url.slice('file:'.length) : url;
+  if (isAbsolute(path)) return path;
+  const repoRoot = resolve(here, '../../../');
+  return resolve(repoRoot, path);
 }
