@@ -3,6 +3,7 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { parseWakePhrases } from '../live/wakePhrase.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const envCandidates = [
@@ -26,6 +27,8 @@ const envSchema = z.object({
   NVIDIA_IMAGE_MODEL: z.string().default('moonshotai/kimi-k2.6'),
   GROQ_API_URL: z.string().url().default('https://api.groq.com/openai/v1/chat/completions'),
   GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
+  GROQ_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
+  GROQ_REASONING_EFFORT: z.enum(['none', 'low', 'medium', 'high']).optional(),
   GIADA_POSTGRES_URL: z.string().url().optional(),
   GIADA_MASTER_KEY: z.string().optional(),
   GIADA_PUBLIC_URL: z.string().url().default('http://127.0.0.1:8787'),
@@ -65,7 +68,27 @@ const envSchema = z.object({
   GIF_PROVIDER: z.enum(['auto', 'giphy', 'tenor']).default('auto'),
   GIPHY_API_KEY: z.string().optional(),
   TENOR_API_KEY: z.string().optional(),
-  TENOR_CLIENT_KEY: z.string().default('giada-assistant')
+  TENOR_CLIENT_KEY: z.string().default('giada-assistant'),
+  GIADA_VOICE_PROVIDER: z.enum(['gemini', 'local']).default('gemini'),
+  LOCAL_VOICE_PYTHON: z.string().default('python'),
+  LOCAL_VOICE_SCRIPT: z.string().default('./scripts/local_voice_service.py'),
+  LOCAL_VOICE_DEVICE: z.string().optional(),
+  WHISPER_MODEL: z.string().default('base'),
+  WHISPER_LANGUAGE: z.string().optional(),
+  XTTS_SPEAKER_WAV: z.string().default('./voices/Serafina - Sensual Temptress_pvc_sp92_s31_sb81_v3.mp3'),
+  XTTS_LANGUAGE: z.string().default('en'),
+  LUNA_WAKE_PHRASES: z.string().default('hey luna,hello luna'),
+  LUNA_WAKE_REQUIRED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  LUNA_VOICE_INPUT_MODE: z.enum(['auto', 'ptt']).default('ptt'),
+  LUNA_SPEECH_END_SILENCE_MS: z.coerce.number().int().positive().default(5000),
+  LUNA_DEBUG_AUDIO: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  LUNA_USER_VOICE_MEMORY: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
+  LUNA_COMMAND_WINDOW_SEC: z.coerce.number().int().positive().default(8),
+  LUNA_WAKE_MODE: z.enum(['split', 'combined']).default('split'),
+  LUNA_LISTENING_ACK: z.string().default("Yes, darling? I'm listening."),
+  LUNA_ECHO_MUTE_MS: z.coerce.number().int().nonnegative().default(3500),
+  WHISPER_INITIAL_PROMPT: z.string().default(''),
+  WHISPER_NO_SPEECH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.35)
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -74,6 +97,7 @@ export function loadConfig() {
   const parsed = envSchema.parse(process.env);
   return {
     ...parsed,
+    wakePhrases: parseWakePhrases(parsed.LUNA_WAKE_PHRASES),
     DISCORD_VOICE_CHANGER_CONFIG: resolveProjectFile(parsed.DISCORD_VOICE_CHANGER_CONFIG),
     allowedOrigins: parsed.GIADA_ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean),
     databasePath: parsed.GIADA_DATABASE_URL.startsWith('file:')

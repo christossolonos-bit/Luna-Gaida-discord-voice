@@ -27,6 +27,8 @@ export class GroqTextClient {
     apiKey?: string;
     system: string;
     userText: string;
+    maxCompletionTokens?: number;
+    temperature?: number;
     tools?: Array<Record<string, unknown>>;
     executeTools?: (calls: GroqToolCall[]) => Promise<Array<{ id: string; name: string; response: unknown }>>;
   }) {
@@ -38,16 +40,16 @@ export class GroqTextClient {
     for (let toolRound = 0; toolRound < 5; toolRound += 1) {
       let result;
       try {
-        result = await this.requestWithRotation(messages, input.tools ?? [], explicitKey);
+        result = await this.requestWithRotation(messages, input.tools ?? [], explicitKey, input.maxCompletionTokens, input.temperature);
       } catch (error) {
         if (!isGroqFunctionCallGenerationError(error) || !(input.tools?.length)) throw error;
-        result = await this.requestWithRotation(messages, [], explicitKey);
+        result = await this.requestWithRotation(messages, [], explicitKey, input.maxCompletionTokens, input.temperature);
       }
       explicitKey = result.explicitKey;
       const message = result.payload.choices?.[0]?.message;
       const calls = message?.tool_calls ?? [];
       if (!calls.length) {
-        const text = message?.content?.trim();
+        const text = extractAssistantText(message);
         if (!text) throw new Error('Groq returned no text');
         return text;
       }
@@ -60,7 +62,13 @@ export class GroqTextClient {
     throw new Error('Groq exceeded the tool-call round limit');
   }
 
-  private async requestWithRotation(messages: GroqMessage[], tools: Array<Record<string, unknown>>, explicitKey?: string) {
+  private async requestWithRotation(
+    messages: GroqMessage[],
+    tools: Array<Record<string, unknown>>,
+    explicitKey?: string,
+    maxCompletionTokens = 2048,
+    temperature = 0.8
+  ) {
     const attemptedKeyIds = new Set<string>();
     let lastError: Error | null = null;
     for (let attempt = 0; attempt < (explicitKey ? 1 : 8); attempt += 1) {
@@ -77,10 +85,11 @@ export class GroqTextClient {
           model: this.config.GROQ_MODEL,
           messages,
           ...(tools.length ? { tools: tools.map((declaration) => ({ type: 'function', function: normalizeDeclaration(declaration) })), tool_choice: 'auto' } : {}),
-          temperature: 0.8,
-          max_completion_tokens: 2048
+          temperature,
+          max_completion_tokens: maxCompletionTokens,
+          ...ollamaRequestExtras(this.config)
         }),
-        signal: AbortSignal.timeout(60_000)
+        signal: AbortSignal.timeout(this.config.GROQ_TIMEOUT_MS)
       });
       const raw = await response.text();
       let payload: GroqResponse;
@@ -110,10 +119,42 @@ class GroqRequestError extends Error {
   }
 }
 
+function ollamaRequestExtras(config: AppConfig) {
+  if (!isOllamaEndpoint(config.GROQ_API_URL)) return {};
+  const effort = config.GROQ_REASONING_EFFORT ?? 'none';
+  return {
+    reasoning_effort: effort,
+    chat_template_kwargs: { enable_thinking: effort === 'none' ? false : true }
+  };
+}
+
+function isOllamaEndpoint(url: string) {
+  try {
+    const host = new URL(url).host;
+    return host === '127.0.0.1:11434' || host === 'localhost:11434';
+  } catch {
+    return false;
+  }
+}
+
 function isGroqFunctionCallGenerationError(error: unknown) {
   return error instanceof GroqRequestError
     && error.status === 400
     && (error.code === 'tool_use_failed' || /failed to call a function/i.test(error.message));
+}
+
+import { stripModelArtifacts } from '../live/voiceReply.js';
+
+function extractAssistantText(message: { content?: string | null; reasoning?: string | null } | undefined) {
+  const content = message?.content?.trim();
+  if (content) {
+    const stripped = stripModelArtifacts(content);
+    if (stripped) return stripped;
+  }
+  const reasoning = (message as { reasoning?: string | null } | undefined)?.reasoning?.trim();
+  if (!reasoning) return '';
+  const withoutThinking = stripModelArtifacts(reasoning.replace(/^Thinking Process:\s*/i, '').trim());
+  return withoutThinking.split('\n').find((line) => line.trim())?.trim() ?? withoutThinking.slice(0, 500);
 }
 
 function normalizeDeclaration(declaration: Record<string, unknown>) {

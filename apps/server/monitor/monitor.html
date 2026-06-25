@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#020810" />
+  <title>Luna Live Monitor</title>
+  <link rel="stylesheet" href="/monitor/style.css?v=2" />
+</head>
+<body>
+  <header>
+    <h1>Luna Live Monitor</h1>
+    <span id="connection" class="status-pill offline">Connecting…</span>
+  </header>
+  <main>
+    <section class="card">
+      <h2>Status</h2>
+      <div id="bot-name" class="stat"><strong>Bot:</strong> —</div>
+      <div id="voice-state" class="stat"><strong>Voice:</strong> not in channel</div>
+      <div id="voice-mode" class="stat"><strong>Mode:</strong> —</div>
+      <div id="voice-diag" class="stat"><strong>Last heard:</strong> —</div>
+      <div id="voice-out" class="stat"><strong>Last spoke:</strong> —</div>
+      <div id="last-error" class="stat"><strong>Last error:</strong> none</div>
+      <button id="ptt-btn" type="button" disabled>Hold to Talk</button>
+      <div id="ptt-hint">Join voice with Luna first. Hold this button while speaking, then release to send.</div>
+    </section>
+    <section class="card">
+      <h2>Live activity</h2>
+      <div id="feed"><div class="empty">Waiting for events…</div></div>
+    </section>
+  </main>
+  <script src="/monitor/app.js?v=2"></script>
+</body>
+</html>

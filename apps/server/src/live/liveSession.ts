@@ -25,11 +25,24 @@ export type LiveSurface = 'desktop' | 'discord' | 'browser';
 export type LiveClientEvent =
   | { type: 'status'; status: 'offline' | 'connecting' | 'connected' | 'error'; reason?: string }
   | { type: 'response.empty'; reason: string }
-  | { type: 'audio'; data: string; mimeType: 'audio/pcm;rate=24000' }
+  | { type: 'audio'; data: string; mimeType: 'audio/pcm;rate=24000' | 'audio/pcm;rate=48000;channels=2' }
   | { type: 'transcript'; speaker: 'user' | 'assistant'; text: string; final?: boolean }
   | { type: 'avatar.expression'; payload: { expression: string; intensity: number } }
   | { type: 'avatar.state'; payload: { state: string } }
   | { type: 'avatar.model.change'; payload: { modelName: string } };
+
+export interface VoiceCallParticipant {
+  userId: string;
+  displayName: string;
+}
+
+export interface VoiceSpeakerContext {
+  guildId: string;
+  userId: string;
+  displayName: string;
+  /** Other humans in the same voice channel (excluding Luna and the current speaker). */
+  othersInCall?: VoiceCallParticipant[];
+}
 
 export interface LiveInputEvent {
   type: 'text' | 'audio' | 'audioStreamEnd' | 'activityStart' | 'activityEnd' | 'video' | 'screen.start' | 'screen.stop' | 'mode' | 'interrupt' | 'turnComplete';
@@ -37,6 +50,7 @@ export interface LiveInputEvent {
   mimeType?: string | undefined;
   text?: string | undefined;
   passive?: boolean | undefined;
+  speaker?: VoiceSpeakerContext | undefined;
 }
 
 export class LiveSessionManager {

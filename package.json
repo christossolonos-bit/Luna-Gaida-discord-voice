@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "dev": "npm run dev --workspace @giada/server & npm run tauri:dev --workspace @giada/desktop",
+    "monitor": "node scripts/luna-monitor.mjs",
     "build": "npm run build --workspace @giada/server && npm run build --workspace @giada/web && npm run build --workspace @giada/desktop",
     "test": "npm run test --workspace @giada/server && npm run test:rust --workspace @giada/desktop",
     "lint": "npm run typecheck --workspaces --if-present"

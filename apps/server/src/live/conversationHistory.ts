@@ -34,6 +34,10 @@ export class ConversationHistory {
   snapshot(): ConversationTurn[] {
     return this.turns.map((turn) => ({ ...turn }));
   }
+
+  clear() {
+    this.turns = [];
+  }
 }
 
 export function appendTurnText(previous: string, incoming: string) {

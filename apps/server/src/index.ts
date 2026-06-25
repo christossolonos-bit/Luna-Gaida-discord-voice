@@ -19,6 +19,7 @@ import { registerWebRoutes } from './web/routes.js';
 import { personalityProfileForRuntime } from './platform/store.js';
 import { LiveUsageMeter } from './platform/liveUsageMeter.js';
 import { BrowserRealtimeSession } from './ws/browserSession.js';
+import { registerMonitorRoutes } from './monitor/routes.js';
 import { z, ZodError } from 'zod';
 
 const config = loadConfig();
@@ -41,7 +42,7 @@ app.addHook('onSend', async (_request, reply) => {
   reply.header('Content-Security-Policy', [
     "default-src 'self'",
     "script-src 'self' https://static.cloudflareinsights.com",
-    "style-src 'self' https://fonts.googleapis.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: https:",
     "connect-src 'self' ws: wss: https://cloudflareinsights.com",
@@ -70,6 +71,12 @@ const discord = config.DISCORD_SHARDING_ENABLED
   : new DiscordPlugin(config, memory, personality, platform?.store);
 
 plugins.register(discord);
+
+await registerMonitorRoutes(app, () => discord.getStatus(), 'startVoicePtt' in discord ? {
+  defaultUserId: config.GIADA_OWNER_DISCORD_USER_ID,
+  startPtt: (userId) => discord.startVoicePtt(userId),
+  stopPtt: (userId) => discord.stopVoicePtt(userId)
+} : undefined);
 
 app.get('/health', async () => {
   const keys = platform ? await platform.store.listAdminProviderKeys() : [];
@@ -213,7 +220,9 @@ server.listen(config.GIADA_SERVER_PORT, config.GIADA_SERVER_HOST, async () => {
   await plugins.startAll();
   logger.info('Giada backend listening', {
     host: config.GIADA_SERVER_HOST,
-    port: config.GIADA_SERVER_PORT
+    port: config.GIADA_SERVER_PORT,
+    voiceProvider: config.GIADA_VOICE_PROVIDER,
+    wakeRequired: config.LUNA_WAKE_REQUIRED
   });
 });
 

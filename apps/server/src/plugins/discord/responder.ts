@@ -20,6 +20,7 @@ import { personalityProfileForRuntime } from '../../platform/store.js';
 import { GroqTextClient } from '../../providers/groq.js';
 import { routeText, textCredits, type TextProviderRoute } from '../../providers/routing.js';
 import { assertDiscordSafe, sanitizeForDiscord, stripThinkBlocks } from '../../policy/privacy.js';
+import { publishActivity } from '../../monitor/activityFeed.js';
 import { createToolRegistry, isToolAvailableForSurface, type MusicController, type RegisteredTool } from '../../tools/registry.js';
 import { logger } from '../../logging/logger.js';
 import { appendTurnText } from '../../live/conversationHistory.js';
@@ -248,6 +249,7 @@ export class DiscordTextResponder {
       return null;
     }
     const safe = assertDiscordSafe(sanitizeForDiscord(visibleText));
+    publishActivity({ level: 'assistant', title: `Luna replied in #${input.channelId}`, detail: safe.text });
     return safe.text;
   }
 
@@ -275,7 +277,7 @@ export class DiscordTextResponder {
         },
         personality: { ...profile, customInstructions: '' }
       };
-      return { runtime, route: { provider: 'gemini', credential: 'private', charge: 'none', reason: 'legacy' } as TextProviderRoute, usage: null };
+      return { runtime, route: { provider: 'groq', credential: 'byok', charge: 'none', reason: 'legacy_local' } as TextProviderRoute, usage: null };
     }
     const baseRuntime = await this.platform.getGuildRuntime(guildId);
     const channelProvider = baseRuntime.settings.listeningChannelModels[channelId];
@@ -312,7 +314,8 @@ export class DiscordTextResponder {
         return { text: 'This server has used its monthly message allowance. Add a Groq BYOK key or upgrade the server plan.' };
       }
       try {
-        const apiKey = provider.route.credential === 'byok' ? await this.platform?.getCredential(input.guildId, 'groq') ?? undefined : undefined;
+        const storedGroqKey = provider.route.credential === 'byok' ? await this.platform?.getCredential(input.guildId, 'groq') : null;
+        const apiKey = storedGroqKey ?? (provider.route.reason === 'legacy_local' ? 'ollama' : undefined);
         const generationParts = await this.withImageDescriptions(parts, input);
         const text = await this.generateGroq(systemInstruction, generationParts, input, apiKey);
         if (reservation) await this.platform!.reconcileUsage(reservation, 1, true);

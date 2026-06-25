@@ -7,6 +7,7 @@ import {
   createAudioPlayer,
   createAudioResource,
   type AudioPlayer,
+  type AudioPlayerState,
   type VoiceConnection,
   type VoiceConnectionState
 } from '@discordjs/voice';
@@ -14,10 +15,12 @@ import { spawn } from 'node:child_process';
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, statSync, unwatchFile, watchFile } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PassThrough } from 'node:stream';
-import prism from 'prism-media';
+import { PassThrough, Readable } from 'node:stream';
+import OpusScript from 'opusscript';
 import type { AppConfig } from '../../config/env.js';
-import { LiveSessionManager, type LiveClientEvent } from '../../live/liveSession.js';
+import type { LiveClientEvent, VoiceCallParticipant } from '../../live/liveSession.js';
+import { LiveSessionManager } from '../../live/liveSession.js';
+import { LocalVoiceSessionManager } from '../../live/localVoiceSession.js';
 import type { MemoryStore } from '../../memory/types.js';
 import type { PersonalityInstructionProvider } from '../../personality/service.js';
 import type { PlatformStore, UsageReservation } from '../../platform/store.js';
@@ -30,7 +33,9 @@ const DISCORD_RATE = 48000;
 const DISCORD_CHANNELS = 2;
 const GEMINI_INPUT_RATE = 16000;
 const GEMINI_OUTPUT_RATE = 24000;
-const SPEECH_END_SILENCE_MS = 900;
+const DEFAULT_SPEECH_END_SILENCE_MS = 900;
+/** 16 kHz mono RMS above this counts as speech (not background noise). */
+const PCM_SPEECH_RMS_THRESHOLD = 320;
 const MIXER_FRAME_MS = 20;
 const MIXER_FRAME_BYTES = DISCORD_RATE * DISCORD_CHANNELS * 2 * MIXER_FRAME_MS / 1000;
 const MIXER_IDLE_END_MS = 450;
@@ -101,7 +106,8 @@ interface VoiceBridgeDiagnostics {
 }
 
 export class DiscordVoiceBridge implements MusicController, VoiceController {
-  private readonly live: LiveSessionManager;
+  private readonly live: LiveSessionManager | LocalVoiceSessionManager;
+  private readonly bypassVoiceChanger: boolean;
   private readonly player: AudioPlayer;
   private readonly mixer: DiscordPcmMixer;
   private readonly voiceChanger: DiscordVoiceChanger;
@@ -112,6 +118,17 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
   private udpDiagnosticsSocket: { on(event: 'message', listener: (message: Buffer) => void): unknown; off(event: 'message', listener: (message: Buffer) => void): unknown } | null = null;
   private udpDiagnosticsHandler: ((message: Buffer) => void) | null = null;
   private readonly activeInputUsers = new Set<string>();
+  private readonly userCaptures = new Map<string, {
+    userId: string;
+    opusDecoder: OpusScript;
+    mode: 'auto' | 'ptt';
+    turnActive: boolean;
+    pttRecording: boolean;
+    pttInputBytes: number;
+    silenceTimer: ReturnType<typeof setTimeout> | null;
+  }>();
+  private pttUiListener: ((phase: 'idle' | 'recording' | 'processing', detail?: string) => void) | null = null;
+  private activeTurnUserId: string | null = null;
   private inputQueue: Promise<void> = Promise.resolve();
   private readonly pendingVoiceTextMessages: Array<{ authorName: string; text: string }> = [];
   private voiceTextDrainTimer: ReturnType<typeof setTimeout> | null = null;
@@ -126,6 +143,9 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
   private usageInputBaseline = 0;
   private usageOutputBaseline = 0;
   private voiceUsageAllowed = true;
+  private userInputMutedUntil = 0;
+  private localTtsPlaying = false;
+  private localTtsQueue: Promise<void> = Promise.resolve();
   private diagnostics: VoiceBridgeDiagnostics = {
     attached: false,
     channelId: null,
@@ -168,6 +188,7 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     private readonly voiceChannelId: string,
     private readonly botUserId: string,
     private readonly resolveSpeakerName: (userId: string) => string,
+    private readonly listVoiceParticipants: () => VoiceCallParticipant[],
     private readonly leaveVoice: () => Promise<Record<string, unknown>>,
     private readonly config: AppConfig,
     memory: MemoryStore,
@@ -210,13 +231,21 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
       (pcm24k) => this.enqueueAssistantSpeech(pcm24k),
       (config as AppConfig & { guildVoiceChanger?: VoiceChangerConfig }).guildVoiceChanger
     );
-    this.live = new LiveSessionManager(config, memory, personality, {
+    this.bypassVoiceChanger = config.GIADA_VOICE_PROVIDER === 'local';
+    const liveProviders = {
       music: this,
       voice: this,
       memoryTags: ['discord', guildId, voiceChannelId],
-      ...(geminiApiKey ? { geminiApiKey } : {}),
       ...(planFeatures ? { toolEnabled: (name: string) => isVoiceToolEnabled(name, planFeatures) } : {})
-    });
+    };
+    if (config.GIADA_VOICE_PROVIDER === 'local') {
+      this.live = new LocalVoiceSessionManager(config, memory, personality);
+    } else {
+      this.live = new LiveSessionManager(config, memory, personality, {
+        ...liveProviders,
+        ...(geminiApiKey ? { geminiApiKey } : {})
+      });
+    }
     this.live.setEmitter((event) => this.handleLiveEvent(event));
 
     this.player = createAudioPlayer({
@@ -266,14 +295,90 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
   }
 
   getStatus() {
+    const pttUserId = [...this.userCaptures.entries()].find(([, state]) => state.pttRecording)?.[0] ?? null;
     return {
       guildId: this.guildId,
       ...this.diagnostics,
       connectionStatus: this.connection?.state.status ?? this.diagnostics.connectionStatus,
       activeInputUsers: this.activeInputUsers.size,
+      pttRecording: Boolean(pttUserId),
+      pttUserId,
+      voiceInputMode: this.isPttMode() ? 'ptt' : 'auto',
       voiceChanger: this.voiceChanger.getStatus(),
       music: this.getMusicStatus()
     };
+  }
+
+  startPttRecording(userId: string) {
+    if (this.destroyed || !this.connection) {
+      return { ok: false, message: 'Luna is not in a voice channel.' };
+    }
+    if (this.isAssistantSpeaking()) {
+      return { ok: false, message: 'Wait until Luna finishes speaking, then try again.' };
+    }
+    const busy = [...this.userCaptures.values()].find((state) => state.pttRecording && state.userId !== userId);
+    if (busy) {
+      return { ok: false, message: 'Someone else is already recording.' };
+    }
+
+    let state = this.userCaptures.get(userId);
+    if (!state) {
+      this.setupUserCapture(this.connection, userId, 'ptt');
+      state = this.userCaptures.get(userId);
+    }
+    if (!state) {
+      return { ok: false, message: 'Could not start microphone capture. Make sure you are unmuted in Discord.' };
+    }
+    if (state.pttRecording) {
+      return { ok: true, message: 'Already recording — click Send Message when done.' };
+    }
+
+    state.pttRecording = true;
+    state.turnActive = true;
+    state.pttInputBytes = 0;
+    this.activeTurnUserId = userId;
+    this.activeInputUsers.add(userId);
+    this.diagnostics.activeInputUsers = this.activeInputUsers.size;
+    if (!this.isAssistantSpeaking()) {
+      this.mixer.clearAssistant();
+    }
+    this.queueGeminiActivityStart();
+    this.pttUiListener?.('recording');
+    return { ok: true, message: 'Recording… speak now.' };
+  }
+
+  stopPttRecording(userId: string) {
+    const state = this.userCaptures.get(userId);
+    if (!state?.pttRecording) {
+      return { ok: false, message: 'Click Start Recording first, then Send Message when done.' };
+    }
+    const minBytes = GEMINI_INPUT_RATE * 2 * 0.4;
+    if (state.pttInputBytes < minBytes) {
+      state.pttRecording = false;
+      state.turnActive = false;
+      state.pttInputBytes = 0;
+      this.activeInputUsers.delete(userId);
+      this.diagnostics.activeInputUsers = this.activeInputUsers.size;
+      this.queueGeminiActivityEnd();
+      this.pttUiListener?.('idle');
+      return { ok: false, message: 'Recording too short — speak for at least half a second, then send.' };
+    }
+    state.pttRecording = false;
+    state.turnActive = false;
+    state.pttInputBytes = 0;
+    this.activeInputUsers.delete(userId);
+    this.diagnostics.activeInputUsers = this.activeInputUsers.size;
+    this.queueGeminiActivityEnd();
+    this.pttUiListener?.('processing');
+    return { ok: true, message: 'Processing your message…' };
+  }
+
+  setPttUiListener(listener: ((phase: 'idle' | 'recording' | 'processing', detail?: string) => void) | null) {
+    this.pttUiListener = listener;
+  }
+
+  private isPttMode() {
+    return this.config.GIADA_VOICE_PROVIDER === 'local' && this.config.LUNA_VOICE_INPUT_MODE === 'ptt';
   }
 
   destroy() {
@@ -285,6 +390,7 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     this.pendingVoiceTextMessages.length = 0;
     this.stopMusicProcesses('destroyed');
     this.voiceChanger.destroy();
+    this.localTtsPlaying = false;
     this.mixer.destroy();
     this.player.stop(true);
     this.live.close();
@@ -332,11 +438,21 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
       return;
     }
     this.speakingHandler = (userId) => {
-      if (userId === this.botUserId || this.activeInputUsers.has(userId)) {
+      if (userId === this.botUserId) {
         return;
       }
       this.diagnostics.speakingStarts += 1;
       this.diagnostics.lastSpeakingAt = new Date().toISOString();
+      if (this.isPttMode()) {
+        return;
+      }
+      if (this.config.GIADA_VOICE_PROVIDER === 'local') {
+        this.ensureUserCapture(connection, userId);
+        return;
+      }
+      if (this.activeInputUsers.has(userId)) {
+        return;
+      }
       this.receiveUserSpeech(connection, userId);
     };
     connection.receiver.speaking.on('start', this.speakingHandler);
@@ -358,7 +474,7 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     if (!this.pendingVoiceTextMessages.length || this.destroyed) {
       return;
     }
-    if (this.activeInputUsers.size > 0 || this.mixer.hasAssistantAudio()) {
+    if (this.activeInputUsers.size > 0 || this.isAssistantSpeaking()) {
       this.scheduleVoiceTextDrain();
       return;
     }
@@ -410,6 +526,9 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
       this.connection.receiver.speaking.off('start', this.speakingHandler);
     }
     this.speakingHandler = null;
+    for (const userId of [...this.userCaptures.keys()]) {
+      this.teardownUserCapture(userId);
+    }
     this.activeInputUsers.clear();
     this.diagnostics.receiverAttached = false;
     this.diagnostics.activeInputUsers = 0;
@@ -460,23 +579,172 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     this.udpDiagnosticsHandler = null;
   }
 
+  private ensureUserCapture(connection: VoiceConnection, userId: string) {
+    if (!this.userCaptures.has(userId)) {
+      this.setupUserCapture(connection, userId, 'auto');
+    }
+  }
+
+  private setupUserCapture(connection: VoiceConnection, userId: string, mode: 'auto' | 'ptt') {
+    if (this.userCaptures.has(userId)) {
+      return;
+    }
+    if (mode !== 'ptt' && (Date.now() < this.userInputMutedUntil || this.isAssistantSpeaking())) {
+      return;
+    }
+
+    const speechEndSilenceMs = this.config.LUNA_SPEECH_END_SILENCE_MS;
+    const opusStream = connection.receiver.subscribe(userId, {
+      end: { behavior: EndBehaviorType.Manual }
+    });
+    const opusDecoder = new OpusScript(DISCORD_RATE, DISCORD_CHANNELS);
+    const state = {
+      userId,
+      opusDecoder,
+      mode,
+      turnActive: false,
+      pttRecording: false,
+      pttInputBytes: 0,
+      silenceTimer: null as ReturnType<typeof setTimeout> | null
+    };
+    this.userCaptures.set(userId, state);
+    this.resolveSpeakerName(userId);
+
+    const endTurn = () => {
+      if (!state.turnActive) {
+        return;
+      }
+      state.turnActive = false;
+      state.pttRecording = false;
+      if (state.silenceTimer) {
+        clearTimeout(state.silenceTimer);
+        state.silenceTimer = null;
+      }
+      this.activeInputUsers.delete(userId);
+      this.diagnostics.activeInputUsers = this.activeInputUsers.size;
+      this.queueGeminiActivityEnd();
+    };
+
+    const scheduleSilenceEnd = () => {
+      if (state.silenceTimer) {
+        clearTimeout(state.silenceTimer);
+      }
+      state.silenceTimer = setTimeout(endTurn, speechEndSilenceMs);
+    };
+
+    const handleDecodedPcm = (chunk: Buffer) => {
+      this.diagnostics.decodedPcmBytes += chunk.length;
+      this.diagnostics.lastDecodedAt = new Date().toISOString();
+      const pcm16k = downsampleDiscordPcmForGemini(chunk);
+      if (pcm16k.length === 0) {
+        return;
+      }
+      if (mode !== 'ptt' && (Date.now() < this.userInputMutedUntil || this.isAssistantSpeaking())) {
+        return;
+      }
+
+      if (state.mode === 'ptt') {
+        if (!state.pttRecording) {
+          return;
+        }
+        state.pttInputBytes += pcm16k.length;
+        this.queueGeminiInput(pcm16k);
+        return;
+      }
+
+      const rms = measurePcmRms(pcm16k);
+      const isSpeech = rms >= PCM_SPEECH_RMS_THRESHOLD;
+      if (isSpeech) {
+        if (!state.turnActive) {
+          state.turnActive = true;
+          this.activeInputUsers.add(userId);
+          this.diagnostics.activeInputUsers = this.activeInputUsers.size;
+          if (!this.isAssistantSpeaking()) {
+            this.mixer.clearAssistant();
+          }
+          this.queueGeminiActivityStart(userId);
+        }
+        this.queueGeminiInput(pcm16k);
+        scheduleSilenceEnd();
+      } else if (state.turnActive) {
+        this.queueGeminiInput(pcm16k);
+      }
+    };
+
+    opusStream.on('data', (chunk: Buffer) => {
+      this.diagnostics.opusBytes += chunk.length;
+      this.diagnostics.lastOpusAt = new Date().toISOString();
+      try {
+        const decoded = opusDecoder.decode(chunk);
+        if (decoded.length > 0) {
+          handleDecodedPcm(Buffer.from(decoded));
+        }
+      } catch (error) {
+        logger.debug('Discord voice skipped invalid opus packet', {
+          guildId: this.guildId,
+          channelId: this.channelId,
+          userId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    });
+    opusStream.once('error', (error) => {
+      this.recordError(error instanceof Error ? error.message : String(error));
+      logger.warn('Discord voice Opus receive stream failed', {
+        guildId: this.guildId,
+        channelId: this.channelId,
+        userId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      this.teardownUserCapture(userId);
+    });
+    opusStream.once('close', () => {
+      this.teardownUserCapture(userId);
+    });
+  }
+
+  private teardownUserCapture(userId: string) {
+    const state = this.userCaptures.get(userId);
+    if (!state) {
+      return;
+    }
+    if (state.silenceTimer) {
+      clearTimeout(state.silenceTimer);
+    }
+    state.opusDecoder.delete();
+    this.userCaptures.delete(userId);
+    if (state.turnActive) {
+      state.turnActive = false;
+      this.queueGeminiActivityEnd();
+    }
+    this.activeInputUsers.delete(userId);
+    this.diagnostics.activeInputUsers = this.activeInputUsers.size;
+  }
+
   private receiveUserSpeech(connection: VoiceConnection, userId: string) {
+    if (Date.now() < this.userInputMutedUntil) {
+      return;
+    }
+    if (this.isAssistantSpeaking()) {
+      return;
+    }
     this.activeInputUsers.add(userId);
     this.diagnostics.activeInputUsers = this.activeInputUsers.size;
     this.resolveSpeakerName(userId);
-    this.mixer.clearAssistant();
+    if (!this.isAssistantSpeaking()) {
+      this.mixer.clearAssistant();
+    }
 
+    const speechEndSilenceMs = this.config.GIADA_VOICE_PROVIDER === 'local'
+      ? this.config.LUNA_SPEECH_END_SILENCE_MS
+      : DEFAULT_SPEECH_END_SILENCE_MS;
     const opusStream = connection.receiver.subscribe(userId, {
       end: {
         behavior: EndBehaviorType.AfterSilence,
-        duration: SPEECH_END_SILENCE_MS
+        duration: speechEndSilenceMs
       }
     });
-    const decoder = new prism.opus.Decoder({
-      frameSize: 960,
-      channels: DISCORD_CHANNELS,
-      rate: DISCORD_RATE
-    });
+    const opusDecoder = new OpusScript(DISCORD_RATE, DISCORD_CHANNELS);
     let forwardedAudio = false;
     let activityStarted = false;
     let loggedDecodedAudio = false;
@@ -486,6 +754,7 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
         return;
       }
       cleanedUp = true;
+      opusDecoder.delete();
       this.activeInputUsers.delete(userId);
       this.diagnostics.activeInputUsers = this.activeInputUsers.size;
       if (completeTurn && activityStarted && forwardedAudio) {
@@ -493,12 +762,50 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
       }
     };
 
+    const handleDecodedPcm = (chunk: Buffer) => {
+      this.diagnostics.decodedPcmBytes += chunk.length;
+      this.diagnostics.lastDecodedAt = new Date().toISOString();
+      if (!loggedDecodedAudio) {
+        loggedDecodedAudio = true;
+        logger.debug('Discord voice received decoded audio', {
+          guildId: this.guildId,
+          channelId: this.channelId,
+          userId,
+          pcmBytes: chunk.length,
+          totalDecodedPcmBytes: this.diagnostics.decodedPcmBytes
+        });
+      }
+      const pcm16k = downsampleDiscordPcmForGemini(chunk);
+      // Discord client-side Krisp already denoised this stream — do not apply extra suppression.
+      if (pcm16k.length > 0) {
+        if (!activityStarted) {
+          activityStarted = true;
+          this.queueGeminiActivityStart(userId);
+        }
+        forwardedAudio = true;
+        this.queueGeminiInput(pcm16k);
+      }
+    };
+
     opusStream.on('data', (chunk: Buffer) => {
       this.diagnostics.opusBytes += chunk.length;
       this.diagnostics.lastOpusAt = new Date().toISOString();
+      try {
+        const decoded = opusDecoder.decode(chunk);
+        if (decoded.length > 0) {
+          handleDecodedPcm(Buffer.from(decoded));
+        }
+      } catch (error) {
+        logger.debug('Discord voice skipped invalid opus packet', {
+          guildId: this.guildId,
+          channelId: this.channelId,
+          userId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
     });
     opusStream.once('error', (error) => {
-      cleanup(false);
+      cleanup(forwardedAudio);
       this.recordError(error instanceof Error ? error.message : String(error));
       logger.warn('Discord voice Opus receive stream failed', {
         guildId: this.guildId,
@@ -507,51 +814,20 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
         error: error instanceof Error ? error.message : String(error)
       });
     });
-    decoder.once('end', () => {
+    opusStream.once('end', () => {
       cleanup(true);
     });
-    decoder.once('close', () => {
+    opusStream.once('close', () => {
       cleanup(true);
     });
-    decoder.once('error', (error) => {
-      cleanup(false);
-      this.recordError(error instanceof Error ? error.message : String(error));
-      logger.warn('Discord voice PCM decoder failed', {
-        guildId: this.guildId,
-        channelId: this.channelId,
-        userId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    });
-
-    opusStream
-      .pipe(decoder)
-      .on('data', (chunk: Buffer) => {
-        this.diagnostics.decodedPcmBytes += chunk.length;
-        this.diagnostics.lastDecodedAt = new Date().toISOString();
-        if (!loggedDecodedAudio) {
-          loggedDecodedAudio = true;
-          logger.debug('Discord voice received decoded audio', {
-            guildId: this.guildId,
-            channelId: this.channelId,
-            userId,
-            pcmBytes: chunk.length,
-            totalDecodedPcmBytes: this.diagnostics.decodedPcmBytes
-          });
-        }
-        const pcm16k = downsampleDiscordPcmForGemini(chunk);
-        if (pcm16k.length > 0) {
-          if (!activityStarted) {
-            activityStarted = true;
-            this.queueGeminiActivityStart();
-          }
-          forwardedAudio = true;
-          this.queueGeminiInput(pcm16k);
-        }
-      });
   }
 
-  private queueGeminiActivityStart() {
+  private queueGeminiActivityStart(userId?: string) {
+    const speakerUserId = userId ?? this.activeTurnUserId;
+    if (userId) {
+      this.activeTurnUserId = userId;
+    }
+    const speaker = speakerUserId ? this.buildSpeakerContext(speakerUserId) : null;
     this.diagnostics.geminiActivityStarts += 1;
     this.diagnostics.lastGeminiActivityStartAt = new Date().toISOString();
     this.inputQueue = this.inputQueue
@@ -568,7 +844,10 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
           this.usageOutputBaseline = this.diagnostics.geminiOutputBytes;
         }
         if (!this.voiceUsageAllowed) throw new Error('voice_credits_exhausted');
-        await this.live.handleInput({ type: 'activityStart' }, 'discord');
+        await this.live.handleInput({
+          type: 'activityStart',
+          ...(speaker ? { speaker } : {})
+        }, 'discord');
       })
       .catch((error) => {
         this.recordError(error instanceof Error ? error.message : String(error));
@@ -578,6 +857,16 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
           error: error instanceof Error ? error.message : String(error)
         });
       });
+  }
+
+  private buildSpeakerContext(userId: string) {
+    const othersInCall = this.listVoiceParticipants().filter((person) => person.userId !== userId);
+    return {
+      guildId: this.guildId,
+      userId,
+      displayName: this.resolveSpeakerName(userId),
+      othersInCall
+    };
   }
 
   private queueGeminiActivityEnd() {
@@ -631,8 +920,28 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
       void this.usage.platform.reconcileUsage(reservation, voiceCredits(inputSeconds, outputSeconds, this.usage.secondsPerCredit), true);
     }
     if (event.type === 'avatar.state' && event.payload.state === 'listening') {
-      this.mixer.clearAssistant();
-      this.voiceChanger.reset();
+      if (!this.bypassVoiceChanger && !this.mixer.hasAssistantAudio()) {
+        this.mixer.clearAssistant();
+        this.voiceChanger.reset();
+      }
+      if (this.isPttMode()) {
+        this.pttUiListener?.('idle');
+      }
+      return;
+    }
+
+    if (event.type === 'avatar.state' && event.payload.state === 'thinking' && this.bypassVoiceChanger && !this.isPttMode()) {
+      this.extendUserInputMute(120_000);
+      return;
+    }
+
+    if (event.type === 'avatar.state' && event.payload.state === 'speaking' && this.bypassVoiceChanger && !this.isPttMode()) {
+      this.extendUserInputMute(120_000);
+      return;
+    }
+
+    if (event.type === 'avatar.state' && event.payload.state === 'thinking' && this.bypassVoiceChanger && this.isPttMode()) {
+      this.pttUiListener?.('processing');
       return;
     }
 
@@ -649,40 +958,122 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     if (event.type !== 'audio') {
       return;
     }
-    if (this.activeInputUsers.size > 0) {
+    if (this.activeInputUsers.size > 0 && !this.bypassVoiceChanger) {
       this.mixer.clearAssistant();
       this.voiceChanger.reset();
       return;
     }
-    const pcm24k = Buffer.from(event.data, 'base64');
+    const pcm = Buffer.from(event.data, 'base64');
+    const discordReady = event.mimeType === 'audio/pcm;rate=48000;channels=2';
     this.diagnostics.geminiAudioEvents += 1;
-    this.diagnostics.geminiOutputBytes += pcm24k.length;
+    this.diagnostics.geminiOutputBytes += pcm.length;
     this.diagnostics.lastGeminiAudioAt = new Date().toISOString();
-    logger.debug('Discord voice received Gemini audio', {
+    logger.debug('Discord voice received assistant audio', {
       guildId: this.guildId,
       channelId: this.channelId,
-      pcmBytes: pcm24k.length,
+      pcmBytes: pcm.length,
+      discordReady,
       audioEvents: this.diagnostics.geminiAudioEvents,
       totalGeminiOutputBytes: this.diagnostics.geminiOutputBytes
     });
-    this.voiceChanger.process(pcm24k);
+    if (this.bypassVoiceChanger) {
+      this.enqueueAssistantSpeech(pcm, discordReady);
+      return;
+    }
+    this.voiceChanger.process(pcm);
   }
 
-  private enqueueAssistantSpeech(pcm24k: Buffer) {
-    if (this.destroyed || this.activeInputUsers.size > 0) return;
-    const discordPcm = upsampleGeminiPcmForDiscord(pcm24k);
-    if (discordPcm.length > 0) {
-      logger.debug('Discord voice writing audio to Discord output', {
+  private extendUserInputMute(durationMs: number) {
+    this.userInputMutedUntil = Math.max(this.userInputMutedUntil, Date.now() + durationMs);
+  }
+
+  private isAssistantSpeaking() {
+    return this.localTtsPlaying || this.mixer.hasAssistantAudio();
+  }
+
+  private enqueueAssistantSpeech(pcm: Buffer, discordReady = false) {
+    if (this.destroyed) return;
+    if (this.activeInputUsers.size > 0 && !discordReady) return;
+    const discordPcm = discordReady ? pcm : upsampleGeminiPcmForDiscord(pcm);
+    if (discordReady) {
+      const playbackMs = pcmDurationMs(discordPcm, DISCORD_RATE, DISCORD_CHANNELS);
+      this.extendUserInputMute(playbackMs + this.config.LUNA_ECHO_MUTE_MS);
+    }
+    if (discordPcm.length <= 0) return;
+
+    if (this.bypassVoiceChanger && discordReady) {
+      this.localTtsQueue = this.localTtsQueue
+        .then(() => this.playCompleteLocalTts(discordPcm))
+        .catch((error) => {
+          this.recordError(error instanceof Error ? error.message : String(error));
+          logger.error('Discord voice local TTS playback failed', {
+            guildId: this.guildId,
+            channelId: this.channelId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
+      return;
+    }
+
+    logger.debug('Discord voice writing audio to Discord output', {
+      guildId: this.guildId,
+      channelId: this.channelId,
+      pcmBytes: discordPcm.length,
+      playerStatus: this.diagnostics.playerStatus,
+      connectionStatus: this.connection?.state.status ?? this.diagnostics.connectionStatus
+    });
+    this.mixer.enqueueAssistant(discordPcm);
+    this.diagnostics.discordOutputBytes += discordPcm.length;
+    this.diagnostics.lastDiscordWriteAt = new Date().toISOString();
+  }
+
+  /** Play one full TTS clip in a single stream (no 20ms mixer chunking). */
+  private playCompleteLocalTts(discordPcm: Buffer): Promise<void> {
+    return new Promise((resolve) => {
+      this.localTtsPlaying = true;
+      this.mixer.clearAssistant();
+
+      const durationMs = pcmDurationMs(discordPcm, DISCORD_RATE, DISCORD_CHANNELS);
+      const stream = Readable.from(discordPcm);
+      const resource = createAudioResource(stream, { inputType: StreamType.Raw });
+
+      const finish = () => {
+        if (!this.localTtsPlaying) return;
+        this.localTtsPlaying = false;
+        cleanup();
+        resolve();
+      };
+
+      const cleanup = () => {
+        this.player.off('stateChange', onStateChange);
+        clearTimeout(fallbackTimer);
+      };
+
+      let sawPlaying = false;
+      const onStateChange = (_old: AudioPlayerState, newState: AudioPlayerState) => {
+        if (newState.status === AudioPlayerStatus.Playing) {
+          sawPlaying = true;
+        }
+        if (sawPlaying && newState.status === AudioPlayerStatus.Idle) {
+          finish();
+        }
+      };
+
+      const fallbackTimer = setTimeout(finish, durationMs + 1_000);
+      fallbackTimer.unref?.();
+
+      this.player.on('stateChange', onStateChange);
+      this.player.play(resource);
+      this.connection?.subscribe(this.player);
+      this.diagnostics.discordOutputBytes += discordPcm.length;
+      this.diagnostics.lastDiscordWriteAt = new Date().toISOString();
+      logger.info('Discord voice playing complete local TTS clip', {
         guildId: this.guildId,
         channelId: this.channelId,
         pcmBytes: discordPcm.length,
-        playerStatus: this.diagnostics.playerStatus,
-        connectionStatus: this.connection?.state.status ?? this.diagnostics.connectionStatus
+        durationMs
       });
-      this.mixer.enqueueAssistant(discordPcm);
-      this.diagnostics.discordOutputBytes += discordPcm.length;
-      this.diagnostics.lastDiscordWriteAt = new Date().toISOString();
-    }
+    });
   }
 
   async playSong(query: string, options: { volume?: number } = {}) {
@@ -1426,8 +1817,9 @@ class DiscordPcmMixer {
     if (!buffer.length) {
       return;
     }
-    this.assistantQueue.push({ buffer, offset: 0 });
-    this.assistantQueuedBytes += buffer.length;
+    const aligned = alignToFrame(buffer);
+    this.assistantQueue.push({ buffer: aligned, offset: 0 });
+    this.assistantQueuedBytes += aligned.length;
     this.assistantActiveUntil = Date.now() + ASSISTANT_DUCK_HOLD_MS;
     this.ensureStarted();
   }
@@ -1448,10 +1840,13 @@ class DiscordPcmMixer {
     this.options.onMusicQueueChange(0);
   }
 
+  private assistantCarry = Buffer.alloc(0);
+
   clearAssistant() {
     this.assistantQueue.length = 0;
     this.assistantQueuedBytes = 0;
     this.assistantActiveUntil = 0;
+    this.assistantCarry = Buffer.alloc(0);
   }
 
   hasAssistantAudio() {
@@ -1508,9 +1903,13 @@ class DiscordPcmMixer {
   }
 
   private readAssistantFrame() {
-    const frame = readPcmFrame(this.assistantQueue, this.assistantQueuedBytes, (bytes) => {
-      this.assistantQueuedBytes -= bytes;
-    });
+    const frame = readPcmFrame(
+      this.assistantQueue,
+      this.assistantQueuedBytes,
+      (bytes) => { this.assistantQueuedBytes -= bytes; },
+      this.assistantCarry,
+      (carry) => { this.assistantCarry = Buffer.from(carry); }
+    );
     if (this.assistantQueuedBytes > 0 || frame) {
       this.assistantActiveUntil = Date.now() + ASSISTANT_DUCK_HOLD_MS;
     }
@@ -1543,32 +1942,61 @@ class DiscordPcmMixer {
   }
 }
 
-function readPcmFrame(queue: PcmQueueEntry[], queuedBytes: number, onConsume: (bytes: number) => void) {
-  if (queuedBytes <= 0) {
+function pcmDurationMs(pcm: Buffer, sampleRate: number, channels: number) {
+  const bytesPerSecond = sampleRate * channels * 2;
+  if (bytesPerSecond <= 0 || pcm.length <= 0) return 0;
+  return Math.max(0, Math.round((pcm.length / bytesPerSecond) * 1000));
+}
+
+function alignToFrame(buffer: Buffer) {
+  const remainder = buffer.length % MIXER_FRAME_BYTES;
+  if (!remainder) return buffer;
+  return Buffer.concat([buffer, Buffer.alloc(MIXER_FRAME_BYTES - remainder)]);
+}
+
+function readPcmFrame(
+  queue: PcmQueueEntry[],
+  queuedBytes: number,
+  onConsume: (bytes: number) => void,
+  carry: Buffer = Buffer.alloc(0),
+  onCarry?: (next: Buffer) => void
+) {
+  if (queuedBytes <= 0 && carry.length <= 0) {
     return null;
   }
+
   const frame = Buffer.alloc(MIXER_FRAME_BYTES);
   let written = 0;
   let consumed = 0;
+
+  if (carry.length > 0) {
+    const fromCarry = Math.min(carry.length, MIXER_FRAME_BYTES);
+    carry.copy(frame, 0, 0, fromCarry);
+    written += fromCarry;
+    carry = carry.subarray(fromCarry);
+  }
+
   while (written < MIXER_FRAME_BYTES && queue.length > 0) {
     const entry = queue[0];
-    if (!entry) {
-      break;
-    }
+    if (!entry) break;
     const available = entry.buffer.length - entry.offset;
     const toCopy = Math.min(available, MIXER_FRAME_BYTES - written);
     entry.buffer.copy(frame, written, entry.offset, entry.offset + toCopy);
     entry.offset += toCopy;
     written += toCopy;
     consumed += toCopy;
-    if (entry.offset >= entry.buffer.length) {
-      queue.shift();
-    }
+    if (entry.offset >= entry.buffer.length) queue.shift();
   }
-  if (consumed > 0) {
-    onConsume(consumed);
+
+  onCarry?.(carry);
+
+  if (written < MIXER_FRAME_BYTES) {
+    if (queue.length > 0 || carry.length > 0) return null;
+    if (written === 0) return null;
   }
-  return written > 0 ? frame : null;
+
+  if (consumed > 0) onConsume(consumed);
+  return frame;
 }
 
 function mixPcmFrames(assistantFrame: Buffer | null, musicFrame: Buffer | null, musicGain: number) {
@@ -1879,4 +2307,16 @@ function upsampleGeminiPcmForDiscord(input: Buffer) {
 
 function clampInt16(value: number) {
   return Math.max(-32768, Math.min(32767, value));
+}
+
+function measurePcmRms(pcm: Buffer) {
+  if (pcm.length < 4) return 0;
+  let sumSq = 0;
+  let count = 0;
+  for (let offset = 0; offset < pcm.length; offset += 2) {
+    const sample = pcm.readInt16LE(offset);
+    sumSq += sample * sample;
+    count += 1;
+  }
+  return Math.sqrt(sumSq / count);
 }

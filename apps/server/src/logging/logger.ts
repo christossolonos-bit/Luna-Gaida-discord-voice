@@ -1,3 +1,5 @@
+import { formatLoggerActivity } from '../monitor/activityFeed.js';
+
 export interface Logger {
   debug(message: string, meta?: unknown): void;
   info(message: string, meta?: unknown): void;
@@ -16,12 +18,15 @@ export const logger: Logger = {
     }
   },
   info(message, meta) {
+    formatLoggerActivity('info', message, meta);
     console.log(JSON.stringify({ level: 'info', message, meta, time: new Date().toISOString() }));
   },
   warn(message, meta) {
+    formatLoggerActivity('warn', message, meta);
     console.warn(JSON.stringify({ level: 'warn', message, meta, time: new Date().toISOString() }));
   },
   error(message, meta) {
+    formatLoggerActivity('error', message, meta);
     console.error(JSON.stringify({ level: 'error', message, meta, time: new Date().toISOString() }));
   }
 };

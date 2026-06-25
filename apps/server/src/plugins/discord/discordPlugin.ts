@@ -1,5 +1,8 @@
 import {
+  ActionRowBuilder,
   ApplicationCommandOptionType,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   Client,
   Events,
@@ -10,8 +13,10 @@ import {
   Routes,
   SlashCommandBuilder,
   type Attachment,
+  type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Message,
+  type TextChannel,
   type VoiceState
 } from 'discord.js';
 import {
@@ -32,6 +37,7 @@ import { personalityProfileForRuntime } from '../../platform/store.js';
 import { assertDiscordSafe, sanitizeForDiscord } from '../../policy/privacy.js';
 import type { GiadaPlugin } from '../plugin.js';
 import { logger } from '../../logging/logger.js';
+import { publishActivity } from '../../monitor/activityFeed.js';
 import { DiscordSettingsStore } from './settings.js';
 import {
   DiscordTextResponder,
@@ -114,8 +120,14 @@ type DiscordRegisteredCommand = {
 
 const InteractionType = {
   Ping: 1,
-  ApplicationCommand: 2
+  ApplicationCommand: 2,
+  MessageComponent: 3
 } as const;
+
+const LUNA_PTT_RECORD_PREFIX = 'luna_ptt_rec:';
+const LUNA_PTT_SEND_PREFIX = 'luna_ptt_snd:';
+
+type PttUiPhase = 'idle' | 'recording' | 'processing';
 
 const InteractionResponseType = {
   Pong: 1,
@@ -195,6 +207,7 @@ export class DiscordPlugin implements GiadaPlugin {
   private readonly diagnosedVoiceConnections = new WeakSet<ReturnType<typeof joinVoiceChannel>>();
   private readonly activeVoiceAdapters = new Map<string, ActiveVoiceAdapter>();
   private readonly appliedIdentitySignatures = new Map<string, string>();
+  private readonly pttControlMessages = new Map<string, { channelId: string; messageId: string }>();
 
   constructor(
     private readonly config: AppConfig,
@@ -298,6 +311,17 @@ export class DiscordPlugin implements GiadaPlugin {
           logger.error('Discord slash command handler failed', {
             command: interaction.commandName,
             id: interaction.id,
+            guildId: interaction.guildId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
+        return;
+      }
+      if (interaction.isButton()) {
+        void this.handleButtonInteraction(interaction).catch((error) => {
+          logger.error('Discord button handler failed', {
+            id: interaction.id,
+            customId: interaction.customId,
             guildId: interaction.guildId,
             error: error instanceof Error ? error.message : String(error)
           });
@@ -806,7 +830,20 @@ export class DiscordPlugin implements GiadaPlugin {
 
       if (mode === 'join') {
         await this.joinVoice(interaction.guildId, voiceChannelId);
-        await this.replyInteraction(interaction, 'Joined voice. I will listen and reply with voice while connected.');
+        const usePtt = this.config.GIADA_VOICE_PROVIDER === 'local' && this.config.LUNA_VOICE_INPUT_MODE === 'ptt';
+        if (usePtt) {
+          publishActivity({ level: 'success', title: 'Joined voice channel', detail: 'Push-to-talk controls posted in chat' });
+          const pttRow = this.buildPttButtonRow(interaction.guildId, voiceChannelId);
+          await this.replyInteraction(
+            interaction,
+            'Joined voice. Use **Start Recording** while you speak, then **Send Message** when done.',
+            [pttRow]
+          );
+          await this.postPttControlMessage(interaction.guildId, interaction.channelId, voiceChannelId);
+        } else {
+          publishActivity({ level: 'success', title: 'Joined voice channel', detail: 'Listening for speech and replying with Serafina voice' });
+          await this.replyInteraction(interaction, 'Joined voice. I will listen and reply with voice while connected.');
+        }
         return;
       }
     }
@@ -1404,6 +1441,28 @@ export class DiscordPlugin implements GiadaPlugin {
     return guild.voiceStates.cache.filter((state) => state.channelId === channelId && !state.member?.user.bot).size;
   }
 
+  private listHumansInVoiceChannel(guildId: string, channelId: string, botUserId: string) {
+    const guild = this.client?.guilds.cache.get(guildId);
+    if (!guild) {
+      return [];
+    }
+    const channel = guild.channels.cache.get(channelId);
+    if (channel?.isVoiceBased()) {
+      return [...channel.members.values()]
+        .filter((member) => !member.user.bot && member.id !== botUserId)
+        .map((member) => ({
+          userId: member.id,
+          displayName: this.resolveVoiceSpeakerName(guildId, member.id)
+        }));
+    }
+    return guild.voiceStates.cache
+      .filter((state) => state.channelId === channelId && !state.member?.user.bot && state.id !== botUserId)
+      .map((state) => ({
+        userId: state.id,
+        displayName: this.resolveVoiceSpeakerName(guildId, state.id)
+      }));
+  }
+
   private async restoreWatchedVoiceConnections() {
     for (const guild of this.client?.guilds.cache.values() ?? []) {
       for (const channelId of this.settings.get(guild.id).voiceWatchChannelIds) {
@@ -1482,6 +1541,7 @@ export class DiscordPlugin implements GiadaPlugin {
         channelId,
         botUserId,
         (userId) => this.resolveVoiceSpeakerName(guildId, userId),
+        () => this.listHumansInVoiceChannel(guildId, channelId, botUserId),
         () => this.leaveVoiceFromTool(guildId, channelId),
         liveConfig,
         this.platform?.guildMemory(guildId) ?? this.memory,
@@ -1492,7 +1552,14 @@ export class DiscordPlugin implements GiadaPlugin {
       );
       this.voiceBridges.set(key, bridge);
     }
+    this.wirePttUiListener(bridge, guildId, channelId);
     return bridge;
+  }
+
+  private wirePttUiListener(bridge: DiscordVoiceBridge, guildId: string, channelId: string) {
+    bridge.setPttUiListener((phase) => {
+      void this.updatePttControlMessage(guildId, channelId, phase);
+    });
   }
 
   private resolveVoiceSpeakerName(guildId: string, userId: string) {
@@ -1856,10 +1923,15 @@ export class DiscordPlugin implements GiadaPlugin {
     }
   }
 
-  private async replyInteraction(interaction: ChatInputCommandInteraction, content: string) {
+  private async replyInteraction(
+    interaction: ChatInputCommandInteraction,
+    content: string,
+    components?: ActionRowBuilder<ButtonBuilder>[]
+  ) {
     const payload = {
       content,
-      allowedMentions: allowedMentionsForContent(content)
+      allowedMentions: allowedMentionsForContent(content),
+      ...(components?.length ? { components } : {})
     };
     if (interaction.deferred && !interaction.replied) {
       await interaction.editReply(payload);
@@ -1870,6 +1942,200 @@ export class DiscordPlugin implements GiadaPlugin {
       return;
     }
     await interaction.reply(payload);
+  }
+
+  private buildPttButtonRow(guildId: string, voiceChannelId: string, phase: PttUiPhase = 'idle') {
+    const recording = phase === 'recording';
+    const processing = phase === 'processing';
+    return new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`${LUNA_PTT_RECORD_PREFIX}${guildId}:${voiceChannelId}`)
+        .setLabel(recording ? 'Recording…' : 'Start Recording')
+        .setStyle(recording ? ButtonStyle.Secondary : ButtonStyle.Success)
+        .setEmoji('🎙️')
+        .setDisabled(recording || processing),
+      new ButtonBuilder()
+        .setCustomId(`${LUNA_PTT_SEND_PREFIX}${guildId}:${voiceChannelId}`)
+        .setLabel(processing ? 'Processing…' : 'Send Message')
+        .setStyle(ButtonStyle.Primary)
+        .setEmoji('✅')
+        .setDisabled(!recording || processing)
+    );
+  }
+
+  private buildPttMessageContent(phase: PttUiPhase) {
+    if (phase === 'recording') {
+      return '**Luna push-to-talk** — 🔴 **Recording now.** Speak your message, then click **Send Message**.';
+    }
+    if (phase === 'processing') {
+      return '**Luna push-to-talk** — ⏳ **Processing…** Luna is thinking. Buttons unlock when she is ready.';
+    }
+    return [
+      '**Luna push-to-talk**',
+      '1. Click **Start Recording**',
+      '2. Speak your full message in voice',
+      '3. Click **Send Message** when done',
+      '',
+      '_For hold-to-talk, use the [monitor page](http://127.0.0.1:8787/monitor)._'
+    ].join('\n');
+  }
+
+  private pttControlKey(guildId: string, voiceChannelId: string) {
+    return `${guildId}:${voiceChannelId}`;
+  }
+
+  private async updatePttControlMessage(guildId: string, voiceChannelId: string, phase: PttUiPhase) {
+    const ref = this.pttControlMessages.get(this.pttControlKey(guildId, voiceChannelId));
+    if (!ref) return;
+    const guild = this.client?.guilds.cache.get(guildId);
+    const channel = guild?.channels.cache.get(ref.channelId) as TextChannel | undefined;
+    if (!channel?.isTextBased() || !('messages' in channel)) return;
+    await channel.messages.edit(ref.messageId, {
+      content: this.buildPttMessageContent(phase),
+      components: [this.buildPttButtonRow(guildId, voiceChannelId, phase)],
+      allowedMentions: { parse: [] }
+    }).catch((error) => {
+      logger.debug('Could not update Luna PTT control message', {
+        guildId,
+        voiceChannelId,
+        phase,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+  }
+
+  private async postPttControlMessage(guildId: string, textChannelId: string | null, voiceChannelId: string) {
+    if (!textChannelId || this.config.GIADA_VOICE_PROVIDER !== 'local' || this.config.LUNA_VOICE_INPUT_MODE !== 'ptt') {
+      return;
+    }
+    const guild = this.client?.guilds.cache.get(guildId);
+    const channel = guild?.channels.cache.get(textChannelId) as TextChannel | undefined;
+    if (!channel?.isTextBased() || !('send' in channel) || typeof channel.send !== 'function') {
+      return;
+    }
+    const message = await channel.send({
+      content: this.buildPttMessageContent('idle'),
+      components: [this.buildPttButtonRow(guildId, voiceChannelId, 'idle')],
+      allowedMentions: { parse: [] }
+    }).catch((error) => {
+      logger.warn('Could not post Luna PTT control message', {
+        guildId,
+        textChannelId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    });
+    if (message) {
+      this.pttControlMessages.set(this.pttControlKey(guildId, voiceChannelId), {
+        channelId: textChannelId,
+        messageId: message.id
+      });
+    }
+  }
+
+  private parsePttButtonId(customId: string) {
+    const match = customId.match(/^luna_ptt_(rec|snd):(\d+):(\d+)$/);
+    if (!match) return null;
+    return {
+      action: match[1] === 'rec' ? 'record' as const : 'send' as const,
+      guildId: match[2]!,
+      voiceChannelId: match[3]!
+    };
+  }
+
+  private async handleButtonInteraction(interaction: ButtonInteraction) {
+    const parsed = this.parsePttButtonId(interaction.customId);
+    if (!parsed || !interaction.guildId || interaction.guildId !== parsed.guildId) {
+      return;
+    }
+
+    const member = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+    const userVoiceChannelId = member?.voice.channelId;
+    if (userVoiceChannelId !== parsed.voiceChannelId) {
+      await interaction.reply({
+        content: `Join <#${parsed.voiceChannelId}> first, then use the push-to-talk buttons.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    const bridge = this.voiceBridges.get(voiceBridgeKey(parsed.guildId, parsed.voiceChannelId));
+    if (!bridge) {
+      await interaction.reply({ content: 'Luna is not in that voice channel. Run `/giada voice mode:join`.', ephemeral: true });
+      return;
+    }
+
+    if (interaction.message?.id && interaction.channelId) {
+      this.pttControlMessages.set(this.pttControlKey(parsed.guildId, parsed.voiceChannelId), {
+        channelId: interaction.channelId,
+        messageId: interaction.message.id
+      });
+    }
+
+    if (parsed.action === 'record') {
+      const result = bridge.startPttRecording(interaction.user.id);
+      publishActivity({
+        level: result.ok ? 'info' : 'warn',
+        title: result.ok ? 'Recording started' : 'Recording failed',
+        detail: result.message ?? ''
+      });
+      if (result.ok) {
+        await interaction.deferUpdate();
+        await this.updatePttControlMessage(parsed.guildId, parsed.voiceChannelId, 'recording');
+      } else {
+        await interaction.reply({ content: result.message ?? 'Could not start recording.', ephemeral: true });
+      }
+      return;
+    }
+
+    const result = bridge.stopPttRecording(interaction.user.id);
+    publishActivity({
+      level: result.ok ? 'success' : 'warn',
+      title: result.ok ? 'Recording sent' : 'Send failed',
+      detail: result.message ?? ''
+    });
+    if (result.ok) {
+      await interaction.deferUpdate();
+      await this.updatePttControlMessage(parsed.guildId, parsed.voiceChannelId, 'processing');
+    } else {
+      await interaction.reply({ content: result.message ?? 'Could not send recording.', ephemeral: true });
+      if (!bridge.getStatus().pttRecording) {
+        await this.updatePttControlMessage(parsed.guildId, parsed.voiceChannelId, 'idle');
+      }
+    }
+  }
+
+  private hasButtonAdminOrOwner(interaction: ButtonInteraction) {
+    return this.isOwnerUser(interaction.user.id)
+      || Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
+  }
+
+  startVoicePtt(userId: string) {
+    const bridge = this.findActiveVoiceBridge();
+    if (!bridge) {
+      return { ok: false, message: 'Luna is not in a voice channel.' };
+    }
+    const result = bridge.startPttRecording(userId);
+    if (result.ok) {
+      publishActivity({ level: 'info', title: 'Recording started (monitor)', detail: result.message ?? '' });
+    }
+    return result;
+  }
+
+  stopVoicePtt(userId: string) {
+    const bridge = this.findActiveVoiceBridge();
+    if (!bridge) {
+      return { ok: false, message: 'Luna is not in a voice channel.' };
+    }
+    const result = bridge.stopPttRecording(userId);
+    if (result.ok) {
+      publishActivity({ level: 'success', title: 'Recording sent (monitor)', detail: result.message ?? '' });
+    }
+    return result;
+  }
+
+  private findActiveVoiceBridge() {
+    return [...this.voiceBridges.values()].find((bridge) => bridge.getStatus().attached);
   }
 
   private helpText() {

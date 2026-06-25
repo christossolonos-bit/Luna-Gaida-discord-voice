@@ -2,11 +2,15 @@ node_modules/
 dist/
 target/
 .env
-.env.docker
-.env.local
+.env.*
+!.env.example
 *.log
 secrets/*
 !secrets/.gitkeep
 apps/server/data/
+data/*.sqlite
+data/debug-audio/
+__pycache__/
+*.pyc
 apps/desktop/src-tauri/target/
 oldCode
