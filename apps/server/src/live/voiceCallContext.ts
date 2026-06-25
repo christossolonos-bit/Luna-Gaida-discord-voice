@@ -17,8 +17,9 @@ export function buildVoiceCallContextBlock(input: {
   conversationBySpeaker: Map<string, ConversationHistory>;
   participantNames: Map<string, string>;
   otherMemoryNotes?: string[];
+  otherRelationshipNotes?: string[];
 }): string {
-  const { speaker, conversationBySpeaker, participantNames, otherMemoryNotes } = input;
+  const { speaker, conversationBySpeaker, participantNames, otherMemoryNotes, otherRelationshipNotes } = input;
   const currentKey = speakerKey(speaker.guildId, speaker.userId);
   const others = speaker.othersInCall ?? [];
 
@@ -36,7 +37,11 @@ export function buildVoiceCallContextBlock(input: {
   });
 
   const memoryBlock = otherMemoryNotes?.length
-    ? `\nPast notes about others in this call (from earlier sessions — NOT facts about ${speaker.displayName}):\n${otherMemoryNotes.join('\n')}`
+    ? `\nPast facts about others in this call (not your feelings):\n${otherMemoryNotes.join('\n')}`
+    : '';
+
+  const relationshipBlock = otherRelationshipNotes?.length
+    ? `\nHow you feel about others in this call (your private read — may differ per person):\n${otherRelationshipNotes.join('\n')}`
     : '';
 
   return [
@@ -46,7 +51,8 @@ export function buildVoiceCallContextBlock(input: {
     '',
     'What others in this call have said to Luna this session (use this when someone asks what another person said):',
     exchangeLines.length ? exchangeLines.join('\n') : '(no one else has spoken to Luna yet this session)',
-    memoryBlock
+    memoryBlock,
+    relationshipBlock
   ].join('\n');
 }
 

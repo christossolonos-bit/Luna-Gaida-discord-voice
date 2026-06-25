@@ -21,6 +21,7 @@ import { LiveUsageMeter } from './platform/liveUsageMeter.js';
 import { BrowserRealtimeSession } from './ws/browserSession.js';
 import { registerMonitorRoutes } from './monitor/routes.js';
 import { UserVoiceMemoryStore } from './memory/userVoiceMemory.js';
+import { LunaLifeStore } from './memory/lunaLifeStore.js';
 import { z, ZodError } from 'zod';
 
 const config = loadConfig();
@@ -67,6 +68,7 @@ app.setErrorHandler((error, request, reply) => {
 const memory = new MemoryRepository(config.databasePath);
 const personality = new PersonalityService(config.databasePath);
 const voiceUserMemory = new UserVoiceMemoryStore(config.databasePath);
+const lunaLife = new LunaLifeStore(config.databasePath);
 const plugins = new PluginManager();
 const discord = config.DISCORD_SHARDING_ENABLED
   ? new DiscordShardManagerPlugin(config)
@@ -78,7 +80,7 @@ await registerMonitorRoutes(app, () => discord.getStatus(), 'startVoicePtt' in d
   defaultUserId: config.GIADA_OWNER_DISCORD_USER_ID,
   startPtt: (userId) => discord.startVoicePtt(userId),
   stopPtt: (userId) => discord.stopVoicePtt(userId)
-} : undefined, voiceUserMemory);
+} : undefined, voiceUserMemory, lunaLife);
 
 app.get('/health', async () => {
   const keys = platform ? await platform.store.listAdminProviderKeys() : [];

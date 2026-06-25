@@ -83,6 +83,7 @@ const envSchema = z.object({
   LUNA_SPEECH_END_SILENCE_MS: z.coerce.number().int().positive().default(5000),
   LUNA_DEBUG_AUDIO: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   LUNA_USER_VOICE_MEMORY: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
+  LUNA_LIFE_MEMORY: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
   LUNA_COMMAND_WINDOW_SEC: z.coerce.number().int().positive().default(8),
   LUNA_WAKE_MODE: z.enum(['split', 'combined']).default('split'),
   LUNA_LISTENING_ACK: z.string().default("Yes, darling? I'm listening."),

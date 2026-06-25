@@ -1,5 +1,6 @@
 const feed = document.getElementById('feed');
 const memoryPanel = document.getElementById('memory-panel');
+const lifePanel = document.getElementById('life-panel');
 const connection = document.getElementById('connection');
 const pttBtn = document.getElementById('ptt-btn');
 const events = new Map();
@@ -94,6 +95,18 @@ function bindPttButton() {
   });
 }
 
+function renderLife(records) {
+  const record = records?.[0];
+  if (!record?.narrative?.trim()) {
+    lifePanel.innerHTML = '<div class="empty">Her story is just beginning…</div>';
+    return;
+  }
+  lifePanel.innerHTML = `
+    <time>Updated ${formatTime(record.updatedAt)}</time>
+    <pre>${escapeHtml(record.narrative)}</pre>
+  `;
+}
+
 function renderMemory(users) {
   if (!users?.length) {
     memoryPanel.innerHTML = '<div class="empty">No saved caller notes yet.</div>';
@@ -103,7 +116,8 @@ function renderMemory(users) {
     <article class="memory-user">
       <h3>${escapeHtml(user.displayName ?? user.userId)}</h3>
       <time>Updated ${formatTime(user.updatedAt)}</time>
-      <pre>${escapeHtml(user.summary ?? '')}</pre>
+      ${user.relationship?.trim() ? `<div class="memory-relationship"><strong>How Luna feels</strong><pre>${escapeHtml(user.relationship)}</pre></div>` : ''}
+      ${user.summary?.trim() ? `<div class="memory-facts"><strong>Facts</strong><pre>${escapeHtml(user.summary)}</pre></div>` : ''}
     </article>
   `).join('');
 }
@@ -112,6 +126,7 @@ async function refreshStatus() {
   try {
     const payload = await fetch('/monitor/status').then((r) => r.json());
     renderMemory(payload.voiceMemory);
+    renderLife(payload.lunaLife);
     const discord = payload.discord ?? {};
     const bot = discord.user?.tag ?? 'offline';
     document.getElementById('bot-name').innerHTML = `<strong>Bot:</strong> ${escapeHtml(bot)}`;

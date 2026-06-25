@@ -9,6 +9,7 @@ export interface VoiceUserMemory {
   userId: string;
   displayName: string | null;
   summary: string;
+  relationship: string;
   updatedAt: string;
 }
 
@@ -17,6 +18,7 @@ interface VoiceUserMemoryRow {
   user_id: string;
   display_name: string | null;
   summary: string;
+  relationship: string;
   updated_at: string;
 }
 
@@ -44,7 +46,15 @@ export class UserVoiceMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_luna_voice_user_memory_updated
         ON luna_voice_user_memory(guild_id, updated_at DESC);
     `);
+    this.ensureRelationshipColumn();
     this.importLegacyRowsIfEmpty();
+  }
+
+  private ensureRelationshipColumn() {
+    const columns = this.db.prepare('PRAGMA table_info(luna_voice_user_memory)').all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === 'relationship')) {
+      this.db.exec(`ALTER TABLE luna_voice_user_memory ADD COLUMN relationship TEXT NOT NULL DEFAULT ''`);
+    }
   }
 
   /** Older builds stored voice memory under apps/server/data when cwd differed. */
@@ -87,7 +97,7 @@ export class UserVoiceMemoryStore {
 
   get(guildId: string, userId: string): VoiceUserMemory | null {
     const row = this.db.prepare(`
-      SELECT guild_id, user_id, display_name, summary, updated_at
+      SELECT guild_id, user_id, display_name, summary, relationship, updated_at
       FROM luna_voice_user_memory
       WHERE guild_id = ? AND user_id = ?
     `).get(guildId, userId) as VoiceUserMemoryRow | undefined;
@@ -98,8 +108,8 @@ export class UserVoiceMemoryStore {
     const normalized = normalizeBulletSummary(summary);
     const now = new Date().toISOString();
     this.db.prepare(`
-      INSERT INTO luna_voice_user_memory (guild_id, user_id, display_name, summary, updated_at)
-      VALUES (@guildId, @userId, @displayName, @summary, @updatedAt)
+      INSERT INTO luna_voice_user_memory (guild_id, user_id, display_name, summary, relationship, updated_at)
+      VALUES (@guildId, @userId, @displayName, @summary, '', @updatedAt)
       ON CONFLICT(guild_id, user_id) DO UPDATE SET
         display_name = excluded.display_name,
         summary = excluded.summary,
@@ -114,9 +124,29 @@ export class UserVoiceMemoryStore {
     return normalized;
   }
 
+  saveRelationship(guildId: string, userId: string, displayName: string | null, relationship: string) {
+    const normalized = normalizeBulletSummary(relationship, 6, 16);
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO luna_voice_user_memory (guild_id, user_id, display_name, summary, relationship, updated_at)
+      VALUES (@guildId, @userId, @displayName, '', @relationship, @updatedAt)
+      ON CONFLICT(guild_id, user_id) DO UPDATE SET
+        display_name = excluded.display_name,
+        relationship = excluded.relationship,
+        updated_at = excluded.updated_at
+    `).run({
+      guildId,
+      userId,
+      displayName,
+      relationship: normalized,
+      updatedAt: now
+    });
+    return normalized;
+  }
+
   listForGuild(guildId: string, limit = 50): VoiceUserMemory[] {
     const rows = this.db.prepare(`
-      SELECT guild_id, user_id, display_name, summary, updated_at
+      SELECT guild_id, user_id, display_name, summary, relationship, updated_at
       FROM luna_voice_user_memory
       WHERE guild_id = ?
       ORDER BY updated_at DESC
@@ -127,7 +157,7 @@ export class UserVoiceMemoryStore {
 
   listAll(limit = 100): VoiceUserMemory[] {
     const rows = this.db.prepare(`
-      SELECT guild_id, user_id, display_name, summary, updated_at
+      SELECT guild_id, user_id, display_name, summary, relationship, updated_at
       FROM luna_voice_user_memory
       ORDER BY updated_at DESC
       LIMIT ?
@@ -165,6 +195,7 @@ function mapRow(row: VoiceUserMemoryRow): VoiceUserMemory {
     userId: row.user_id,
     displayName: row.display_name,
     summary: row.summary,
+    relationship: row.relationship ?? '',
     updatedAt: row.updated_at
   };
 }

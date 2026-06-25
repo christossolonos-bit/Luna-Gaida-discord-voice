@@ -14,7 +14,10 @@ import { parseWakePhrases, evaluateWakePhrase, isLikelyEchoTranscript } from './
 import { isLikelyNonsenseTranscript, sanitizeVoiceReply } from './voiceReply.js';
 import type { LiveClientEvent, LiveInputEvent, LiveSurface, VoiceSpeakerContext } from './liveSession.js';
 import { UserVoiceMemoryStore } from '../memory/userVoiceMemory.js';
+import { LunaLifeStore } from '../memory/lunaLifeStore.js';
 import { updateUserVoiceMemory } from '../memory/updateUserVoiceMemory.js';
+import { updateUserRelationship } from '../memory/updateUserRelationship.js';
+import { updateLunaLife } from '../memory/updateLunaLife.js';
 import { buildVoiceCallContextBlock, buildVoiceCallContextForMemory, recordParticipantNames } from './voiceCallContext.js';
 
 const INPUT_RATE = 16000;
@@ -38,6 +41,7 @@ export class LocalVoiceSessionManager {
   private currentSpeaker: VoiceSpeakerContext | null = null;
   private readonly tempDir: string;
   private readonly userVoiceMemory: UserVoiceMemoryStore;
+  private readonly lunaLife: LunaLifeStore;
 
   constructor(
     private readonly config: AppConfig,
@@ -61,6 +65,7 @@ export class LocalVoiceSessionManager {
     this.voice = new LocalVoiceService(serviceConfig);
     this.groq = new GroqTextClient(config);
     this.userVoiceMemory = new UserVoiceMemoryStore(config.databasePath);
+    this.lunaLife = new LunaLifeStore(config.databasePath);
     this.tempDir = join(tmpdir(), 'giada-local-voice');
     mkdirSync(this.tempDir, { recursive: true });
     void this.voice.start().catch((error) => {
@@ -271,11 +276,15 @@ export class LocalVoiceSessionManager {
     const history = this.historyForSpeaker(speaker);
 
     let memoryBlock = '';
+    let relationshipBlock = '';
     if (this.config.LUNA_USER_VOICE_MEMORY && speaker) {
       const record = this.userVoiceMemory.get(speaker.guildId, speaker.userId);
       if (record?.summary?.trim()) {
-        memoryBlock = `\nWhat you remember about ${speaker.displayName} from past voice chats (bullet notes, may be incomplete):\n${record.summary}`;
+        memoryBlock = `\nWhat you remember about ${speaker.displayName} from past voice chats (facts only):\n${record.summary}`;
       }
+      relationshipBlock = record?.relationship?.trim()
+        ? `\nHow you feel about ${speaker.displayName} right now (your choice — let this shape warmth, flirtation, distance, or bluntness):\n${record.relationship}`
+        : `\nHow you feel about ${speaker.displayName}: still forming an opinion — curious but not committed; flirt only if you genuinely want to.`;
     }
 
     const callContextBlock = speaker
@@ -283,11 +292,31 @@ export class LocalVoiceSessionManager {
         speaker,
         conversationBySpeaker: this.conversationBySpeaker,
         participantNames: this.participantDisplayNames,
-        otherMemoryNotes: this.otherParticipantMemoryNotes(speaker)
+        otherMemoryNotes: this.otherParticipantMemoryNotes(speaker),
+        otherRelationshipNotes: this.otherParticipantRelationshipNotes(speaker)
       })
       : '';
 
-    const system = `${this.personality.buildInstruction(surface, { nsfwAllowed: true })}\nYou are speaking aloud in a Discord voice channel as Luna only. Your name is Luna — never Giada, never a generic assistant. Reply in at most 2 short sentences and under 40 words. Respond only to what the user actually said; do not invent names, facts, or context. When someone asks what another person in the call said, use the voice call context below. Stay in Luna's seductive voice.${memoryBlock}${callContextBlock}`;
+    let lifeBlock = '';
+    if (this.config.LUNA_LIFE_MEMORY && speaker) {
+      const narrative = this.lunaLife.getNarrative(speaker.guildId);
+      lifeBlock = `\nYour own life (ongoing story built from your choices and relationships — speak from this when asked about yourself):\n${narrative}`;
+    }
+
+    const system = [
+      this.personality.buildInstruction(surface, { nsfwAllowed: true }),
+      'You are speaking aloud in a Discord voice channel as Luna only. Your name is Luna — never Giada, never a generic assistant.',
+      'Answer the actual question first. When asked about your day, hobbies, or plans, draw from your life journal below.',
+      'You have free will. Your feelings toward each caller are yours alone — you may like, dislike, tolerate, adore, or stay cool with different people.',
+      'Flirt when you choose to with someone you like; be distant or dry with someone who annoys you. Never fake warmth you do not feel.',
+      'Your life evolves because of what you decide and who you bond with — reference that history naturally.',
+      'Keep replies concise for voice: usually 2–4 sentences, under 70 words unless they asked for detail.',
+      'Respond only to what the user actually said; do not invent names or facts. When someone asks what another person in the call said, use the voice call context below.',
+      lifeBlock,
+      relationshipBlock,
+      memoryBlock,
+      callContextBlock
+    ].filter(Boolean).join('\n');
     const historyPrompt = history.toPromptParts().map((part) => part.text ?? '').filter(Boolean).join('\n');
     const prompt = historyPrompt
       ? `${historyPrompt}\n\nCurrent user message: ${userText}`
@@ -298,8 +327,8 @@ export class LocalVoiceSessionManager {
       apiKey: 'ollama',
       system,
       userText: prompt,
-      maxCompletionTokens: 80,
-      temperature: 0.35
+      maxCompletionTokens: 150,
+      temperature: 0.45
     });
     const llmMs = Date.now() - llmStarted;
     logger.info('Local voice generated reply', { chars: reply.length, llmMs });
@@ -324,24 +353,74 @@ export class LocalVoiceSessionManager {
         conversationBySpeaker: this.conversationBySpeaker,
         participantNames: this.participantDisplayNames
       });
-      void updateUserVoiceMemory({
-        store: this.userVoiceMemory,
-        groq: this.groq,
-        guildId: speaker.guildId,
-        userId: speaker.userId,
-        displayName: speaker.displayName,
-        userSaid: userText,
-        lunaReplied: cleaned,
-        existingSummary: existing?.summary ?? null,
-        recentHistory,
-        callContext: memoryCallContext
-      }).then((summary) => {
+      const bonds = this.userVoiceMemory.listForGuild(speaker.guildId)
+        .filter((record) => record.relationship?.trim())
+        .map((record) => ({
+          displayName: record.displayName ?? record.userId,
+          relationship: record.relationship
+        }));
+      const lifePromise = this.config.LUNA_LIFE_MEMORY
+        ? updateLunaLife({
+          store: this.lunaLife,
+          groq: this.groq,
+          guildId: speaker.guildId,
+          callerName: speaker.displayName,
+          callerRelationship: existing?.relationship ?? null,
+          userSaid: userText,
+          lunaReplied: cleaned,
+          existingLife: this.lunaLife.get(speaker.guildId)?.narrative ?? null,
+          bonds
+        })
+        : Promise.resolve(null);
+
+      void Promise.all([
+        updateUserVoiceMemory({
+          store: this.userVoiceMemory,
+          groq: this.groq,
+          guildId: speaker.guildId,
+          userId: speaker.userId,
+          displayName: speaker.displayName,
+          userSaid: userText,
+          lunaReplied: cleaned,
+          existingSummary: existing?.summary ?? null,
+          recentHistory,
+          callContext: memoryCallContext
+        }),
+        updateUserRelationship({
+          store: this.userVoiceMemory,
+          groq: this.groq,
+          guildId: speaker.guildId,
+          userId: speaker.userId,
+          displayName: speaker.displayName,
+          userSaid: userText,
+          lunaReplied: cleaned,
+          existingRelationship: existing?.relationship ?? null,
+          recentHistory
+        }),
+        lifePromise
+      ]).then(([summary, relationship, life]) => {
         if (summary?.trim()) {
           publishActivity({
             level: 'info',
             title: `Remembering ${speaker.displayName}`,
             detail: summary,
-            meta: { userId: speaker.userId, guildId: speaker.guildId }
+            meta: { userId: speaker.userId, guildId: speaker.guildId, kind: 'facts' }
+          });
+        }
+        if (relationship?.trim()) {
+          publishActivity({
+            level: 'info',
+            title: `Feeling about ${speaker.displayName}`,
+            detail: relationship,
+            meta: { userId: speaker.userId, guildId: speaker.guildId, kind: 'relationship' }
+          });
+        }
+        if (life?.trim()) {
+          publishActivity({
+            level: 'info',
+            title: 'Luna\'s life',
+            detail: life,
+            meta: { guildId: speaker.guildId, kind: 'life' }
           });
         }
       }).catch((error) => {
@@ -391,6 +470,21 @@ export class LocalVoiceSessionManager {
         }
         const bullets = record.summary.split('\n').filter(Boolean).slice(0, 3).join('; ');
         return `- ${other.displayName}: ${bullets}`;
+      })
+      .filter((line): line is string => Boolean(line));
+  }
+
+  private otherParticipantRelationshipNotes(speaker: VoiceSpeakerContext) {
+    if (!this.config.LUNA_USER_VOICE_MEMORY) {
+      return [];
+    }
+    return (speaker.othersInCall ?? [])
+      .map((other) => {
+        const record = this.userVoiceMemory.get(speaker.guildId, other.userId);
+        if (!record?.relationship?.trim()) {
+          return null;
+        }
+        return `- ${other.displayName}: ${record.relationship.split('\n').filter(Boolean).slice(0, 3).join('; ')}`;
       })
       .filter((line): line is string => Boolean(line));
   }

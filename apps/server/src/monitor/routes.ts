@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listActivity, subscribeActivity } from './activityFeed.js';
 import type { UserVoiceMemoryStore } from '../memory/userVoiceMemory.js';
+import type { LunaLifeStore } from '../memory/lunaLifeStore.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -28,7 +29,8 @@ export async function registerMonitorRoutes(
   app: FastifyInstance,
   getDiscordStatus: () => unknown,
   ptt?: MonitorPttHandlers,
-  voiceMemory?: UserVoiceMemoryStore
+  voiceMemory?: UserVoiceMemoryStore,
+  lunaLife?: LunaLifeStore
 ) {
   const dir = monitorDir();
 
@@ -84,6 +86,12 @@ export async function registerMonitorRoutes(
       userId: record.userId,
       guildId: record.guildId,
       summary: record.summary,
+      relationship: record.relationship,
+      updatedAt: record.updatedAt
+    })) ?? [],
+    lunaLife: lunaLife?.listAll(5).map((record) => ({
+      guildId: record.guildId,
+      narrative: record.narrative,
       updatedAt: record.updatedAt
     })) ?? []
   }));
@@ -94,6 +102,7 @@ export async function registerMonitorRoutes(
       userId: record.userId,
       guildId: record.guildId,
       summary: record.summary,
+      relationship: record.relationship,
       updatedAt: record.updatedAt
     })) ?? []
   }));

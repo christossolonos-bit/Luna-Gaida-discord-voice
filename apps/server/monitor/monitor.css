@@ -81,7 +81,7 @@ h1 {
 main {
   display: grid;
   grid-template-columns: 320px 1fr;
-  grid-template-rows: auto auto;
+  grid-template-rows: auto auto auto;
   gap: 1rem;
   padding: 1rem;
   max-width: 1200px;
@@ -99,8 +99,28 @@ main > .card:nth-child(2) {
 }
 
 main > .card:nth-child(3) {
+  grid-column: 1;
+  grid-row: 3;
+}
+
+main > .card:nth-child(4) {
   grid-column: 2;
-  grid-row: 1 / span 2;
+  grid-row: 1 / span 3;
+}
+
+.life-panel {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.life-panel pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 0.84rem;
+  color: #9ed4ff;
+  line-height: 1.4;
 }
 
 .memory-panel {
@@ -141,6 +161,25 @@ main > .card:nth-child(3) {
   line-height: 1.35;
 }
 
+.memory-relationship,
+.memory-facts {
+  margin-top: 0.5rem;
+}
+
+.memory-relationship strong,
+.memory-facts strong {
+  display: block;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+.memory-relationship pre {
+  color: #c9b8ff;
+}
+
 @media (max-width: 800px) {
   main {
     grid-template-columns: 1fr;
@@ -149,7 +188,8 @@ main > .card:nth-child(3) {
 
   main > .card:nth-child(1),
   main > .card:nth-child(2),
-  main > .card:nth-child(3) {
+  main > .card:nth-child(3),
+  main > .card:nth-child(4) {
     grid-column: 1;
     grid-row: auto;
   }
