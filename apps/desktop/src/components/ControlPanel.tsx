@@ -1,5 +1,6 @@
 import { Bell, Clipboard, Globe, Mic, MicOff, MonitorUp, Pause, Play, Shield, VolumeX } from 'lucide-react';
 import type { FormEvent } from 'react';
+import { LUNA_NAME, LUNA_TAGLINE } from '../lib/lunaBrand';
 import type { CompanionState, RealtimeClient, TranscriptLine } from '../lib/realtime';
 import { openAllowedUrl, setClipboardEnabled, setScreenshotEnabled, showNotification } from '../lib/permissions';
 
@@ -31,8 +32,8 @@ export function ControlPanel(props: ControlPanelProps) {
     <aside className="control-panel">
       <header>
         <div>
-          <h1>Giada</h1>
-          <p>{props.status} · {props.state}</p>
+          <h1>{LUNA_NAME}</h1>
+          <p>{LUNA_TAGLINE} · {props.status} · {props.state}</p>
         </div>
         <button title="Open Gemini Live API docs" onClick={() => void openAllowedUrl('https://ai.google.dev/gemini-api/docs/live-api')}>
           <Globe size={18} />
@@ -91,21 +92,21 @@ export function ControlPanel(props: ControlPanelProps) {
         <h2>Permissions</h2>
         <label><input type="checkbox" onChange={(event) => void setClipboardEnabled(event.currentTarget.checked)} /> Clipboard</label>
         <label><input type="checkbox" onChange={(event) => void setScreenshotEnabled(event.currentTarget.checked)} /> Native screenshot</label>
-        <button onClick={() => void showNotification('Giada', 'Desktop notifications are enabled.')}><Bell size={16} /> Test notification</button>
+        <button onClick={() => void showNotification(LUNA_NAME, 'Desktop notifications are enabled.')}><Bell size={16} /> Test notification</button>
         <p><Shield size={14} /> File access is scoped to app data/config/cache/assets. Shell execution is not exposed.</p>
       </section>
 
       <section className="transcript">
         {props.transcripts.map((line) => (
           <article key={line.id} className={line.speaker}>
-            <strong>{line.speaker === 'assistant' ? 'Giada' : 'You'}</strong>
+            <strong>{line.speaker === 'assistant' ? LUNA_NAME : 'You'}</strong>
             <span>{line.text}</span>
           </article>
         ))}
       </section>
 
       <form className="composer" onSubmit={submit}>
-        <input name="text" placeholder="Type to Giada" autoComplete="off" />
+        <input name="text" placeholder={`Talk to ${LUNA_NAME}…`} autoComplete="off" />
         <button title="Send text"><Clipboard size={18} /></button>
       </form>
     </aside>

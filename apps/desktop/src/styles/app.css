@@ -230,6 +230,21 @@ body.avatar-window #root {
   pointer-events: none;
 }
 
+.luna-name-tag {
+  position: absolute;
+  left: 50%;
+  top: 10px;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(10, 14, 24, 0.55);
+  color: #f3e8ff;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
 @media (max-width: 920px) {
   .app-shell {
     grid-template-columns: 1fr;

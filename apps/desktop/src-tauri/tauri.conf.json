@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Giada Companion",
+  "productName": "Luna",
   "version": "0.1.0",
-  "identifier": "com.diamantino.giada-companion",
+  "identifier": "com.luna.desktop-companion",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Giada Companion",
+        "title": "Luna",
         "url": "/",
         "width": 1180,
         "height": 760,
@@ -26,7 +26,7 @@
       },
       {
         "label": "avatar",
-        "title": "Giada",
+        "title": "Luna",
         "url": "/avatar.html",
         "width": 360,
         "height": 620,
@@ -40,7 +40,11 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ws://127.0.0.1:8787 http://127.0.0.1:8787; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'",
+      "csp": "default-src 'self' asset: http://asset.localhost; connect-src 'self' ws://127.0.0.1:8787 http://127.0.0.1:8787 asset: http://asset.localhost; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["D:/live2d model viewer/**"]
+      },
       "capabilities": ["main", "avatar"]
     }
   },

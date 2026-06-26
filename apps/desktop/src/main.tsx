@@ -2,9 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { listen } from '@tauri-apps/api/event';
 import { AvatarStage } from './components/AvatarStage';
+import { Live2DAvatarStage } from './components/Live2DAvatarStage';
 import { ControlPanel } from './components/ControlPanel';
 import { RealtimeClient, type CompanionState, type RealtimeEvent, type TranscriptLine } from './lib/realtime';
 import './styles/app.css';
+
+const useLive2D = (import.meta.env.VITE_AVATAR_RENDERER ?? 'live2d') === 'live2d';
 
 function App() {
   const client = useMemo(() => new RealtimeClient({ audioEnabled: true }), []);
@@ -71,7 +74,11 @@ function App() {
   return (
     <main className="app-shell">
       <section className="avatar-pane">
-        <AvatarStage state={state} expression={expression} modelName={modelName} analyser={client.player.getAnalyser()} />
+        {useLive2D ? (
+          <Live2DAvatarStage state={state} expression={expression} />
+        ) : (
+          <AvatarStage state={state} expression={expression} modelName={modelName} analyser={client.player.getAnalyser()} />
+        )}
       </section>
       <ControlPanel
         client={client}

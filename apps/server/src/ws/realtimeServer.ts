@@ -8,7 +8,11 @@ import { setAvatarBroadcaster } from './avatarBroadcast.js';
 
 const realtimeSurfaceSchema = z.enum(['app', 'browser']).optional();
 const clientEventSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('connect'), surface: realtimeSurfaceSchema }),
+  z.object({
+    type: z.literal('connect'),
+    surface: realtimeSurfaceSchema,
+    role: z.enum(['avatar', 'live']).optional()
+  }),
   z.object({ type: z.literal('disconnect') }),
   z.object({ type: z.literal('text'), text: z.string().max(8000), requestId: z.string().uuid().optional() }),
   z.object({ type: z.literal('audio'), data: z.string(), mimeType: z.string().optional() }),
@@ -38,6 +42,7 @@ export function attachRealtimeServer(
 ) {
   const wss = new WebSocketServer({ server, path: '/realtime' });
   const sockets = new Map<WebSocket, RealtimeContext>();
+  const avatarOnlySockets = new Set<WebSocket>();
   const liveContexts = new Map<RealtimeContext, RealtimeSession>();
   const browserLive = new Map<WebSocket, RealtimeSession>();
 
@@ -73,7 +78,7 @@ export function attachRealtimeServer(
     getLive(context).emitCurrentStatus();
   };
 
-  const broadcastAvatarToApp = (event: Extract<LiveClientEvent, { type: 'avatar.state' | 'avatar.expression' | 'avatar.model.change' }>) => {
+  const broadcastAvatarToApp = (event: Extract<LiveClientEvent, { type: 'avatar.state' | 'avatar.expression' | 'avatar.model.change' | 'avatar.lipsync' }>) => {
     for (const [socket, socketContext] of sockets) {
       if (socketContext !== 'app') continue;
       if (socket.readyState === socket.OPEN) {
@@ -129,7 +134,6 @@ export function attachRealtimeServer(
     }
     sockets.set(socket, context);
     const currentLive = () => context === 'browser' ? browserLive.get(socket) : getLive(context);
-    currentLive()?.emitCurrentStatus();
 
     socket.on('message', (raw) => {
       try {
@@ -149,11 +153,26 @@ export function attachRealtimeServer(
             context = nextContext;
             sockets.set(socket, context);
             closeContextIfIdle(previousContext);
-            currentLive()?.emitCurrentStatus();
           }
+
+          const avatarOnly = parsed.role === 'avatar';
+          if (avatarOnly) {
+            avatarOnlySockets.add(socket);
+            socket.send(JSON.stringify({ type: 'status', status: 'connected', reason: 'avatar_sync' }));
+            socket.send(JSON.stringify({ type: 'avatar.state', payload: { state: 'idle' } }));
+            return;
+          }
+
+          avatarOnlySockets.delete(socket);
+          currentLive()?.emitCurrentStatus();
           void currentLive()?.connect(toLiveSurface(context));
         } else if (parsed.type === 'disconnect') {
-          currentLive()?.close();
+          if (!avatarOnlySockets.has(socket)) {
+            currentLive()?.close();
+          }
+        } else if (avatarOnlySockets.has(socket)) {
+          // Avatar shell only listens for Luna voice state — no Gemini live input.
+          return;
         } else {
           if (parsed.type === 'text' && parsed.requestId && socket.readyState === socket.OPEN) {
             socket.send(JSON.stringify({
@@ -187,6 +206,7 @@ export function attachRealtimeServer(
 
     socket.on('close', () => {
       clearInterval(heartbeat);
+      avatarOnlySockets.delete(socket);
       sockets.delete(socket);
       browserLive.get(socket)?.dispose();
       browserLive.delete(socket);

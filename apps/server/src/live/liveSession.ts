@@ -29,6 +29,7 @@ export type LiveClientEvent =
   | { type: 'transcript'; speaker: 'user' | 'assistant'; text: string; final?: boolean }
   | { type: 'avatar.expression'; payload: { expression: string; intensity: number } }
   | { type: 'avatar.state'; payload: { state: string } }
+  | { type: 'avatar.lipsync'; payload: { frameMs: number; open: number[] } }
   | { type: 'avatar.model.change'; payload: { modelName: string } };
 
 export interface VoiceCallParticipant {

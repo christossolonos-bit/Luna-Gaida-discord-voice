@@ -17,6 +17,9 @@ pub fn run() {
             screenshot_enabled: Mutex::new(false),
         })
         .setup(|app| {
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.hide();
+            }
             if let Some(avatar) = app.get_webview_window("avatar") {
                 if let Ok(Some(monitor)) = avatar.current_monitor() {
                     if let Ok(size) = avatar.outer_size() {
@@ -50,5 +53,5 @@ pub fn run() {
             capture_screenshot
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Giada Companion");
+        .expect("error while running Luna desktop companion");
 }

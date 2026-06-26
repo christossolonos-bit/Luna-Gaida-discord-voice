@@ -1,5 +1,6 @@
 import * as PIXI from 'pixi.js';
 import { install } from '@pixi/unsafe-eval';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { Live2DModel } from 'pixi-live2d-display/cubism4';
 import type { CompanionState } from './realtime';
 
@@ -31,6 +32,24 @@ export function saveLive2dModelUrl(url: string) {
   try {
     localStorage.setItem('luna.live2d.modelUrl', url);
   } catch { /* ignore */ }
+}
+
+function isAbsoluteFilesystemPath(value: string) {
+  return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\');
+}
+
+export function toLoadableModelUrl(modelPath: string) {
+  const trimmed = modelPath.trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith('/') && !isAbsoluteFilesystemPath(trimmed)) return trimmed;
+  if (isAbsoluteFilesystemPath(trimmed)) {
+    if ('__TAURI_INTERNALS__' in window) {
+      return convertFileSrc(trimmed);
+    }
+    throw new Error('Local Live2D model paths require the Luna desktop app (Tauri).');
+  }
+  return trimmed;
 }
 
 export class Live2DAvatarRuntime {
@@ -70,7 +89,7 @@ export class Live2DAvatarRuntime {
       this.model = null;
     }
 
-    const model = await Live2DModel.from(modelUrl, { autoInteract: false });
+    const model = await Live2DModel.from(toLoadableModelUrl(modelUrl), { autoInteract: false });
     this.model = model;
     this.app!.stage.addChild(model);
     this.scaleModelToFit(model);

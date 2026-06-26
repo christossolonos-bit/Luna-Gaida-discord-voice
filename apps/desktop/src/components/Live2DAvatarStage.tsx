@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { LUNA_NAME } from '../lib/lunaBrand';
 import type { CompanionState } from '../lib/realtime';
 import { Live2DAvatarRuntime, resolveLive2dModelUrl } from '../lib/live2dRuntime';
 
@@ -39,6 +40,7 @@ export function Live2DAvatarStage({ state, expression, floating = false }: Live2
   return (
     <div className={floating ? 'avatar-stage floating live2d-stage' : 'avatar-stage live2d-stage'}>
       <div ref={containerRef} className="live2d-canvas-host" />
+      {floating ? <div className="luna-name-tag">{LUNA_NAME}</div> : null}
       {hint ? <div className="live2d-hint">{hint}</div> : null}
     </div>
   );

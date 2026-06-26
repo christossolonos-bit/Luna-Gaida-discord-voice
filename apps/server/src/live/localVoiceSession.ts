@@ -21,6 +21,7 @@ import { updateLunaLife } from '../memory/updateLunaLife.js';
 import { buildVoiceCallContextBlock, buildVoiceCallContextForMemory, recordParticipantNames } from './voiceCallContext.js';
 import { FishAudioTts } from './fishAudioTts.js';
 import { FISH_AUDIO_EXPRESSION_PROMPT, stripFishAudioTagsForDisplay } from './fishAudioExpressions.js';
+import { buildLipSyncFrames } from './lipSyncFrames.js';
 
 const INPUT_RATE = 16000;
 const DISCORD_RATE = 48000;
@@ -539,10 +540,18 @@ export class LocalVoiceSessionManager {
     const ttsMs = Date.now() - ttsStarted;
     const discordPcm = await wavToDiscordPcm(this.config.FFMPEG_BINARY, outWav);
     safeUnlink(outWav);
+    this.emitLipSync(discordPcm);
     this.emitFullPcmAudio(discordPcm);
     const playbackMs = pcmDurationMs(discordPcm, DISCORD_RATE, DISCORD_CHANNELS) + 1_000;
     await delay(playbackMs);
     return { ttsMs, playbackMs };
+  }
+
+  private emitLipSync(discordPcm: Buffer) {
+    if (this.closed || !discordPcm.length) return;
+    const frameMs = 50;
+    const open = buildLipSyncFrames(discordPcm, DISCORD_RATE, DISCORD_CHANNELS, frameMs);
+    this.emit?.({ type: 'avatar.lipsync', payload: { frameMs, open } });
   }
 
   private emitFullPcmAudio(discordPcm: Buffer) {

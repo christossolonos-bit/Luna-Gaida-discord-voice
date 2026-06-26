@@ -1,0 +1,23 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start Luna",
+      "type": "shell",
+      "command": "npm run start:luna",
+      "options": {
+        "cwd": "${workspaceFolder}/GiadaAssistant"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      },
+      "isBackground": true,
+      "runOptions": {
+        "instanceLimit": 1
+      }
+    }
+  ]
+}
