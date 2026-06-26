@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import type { AppConfig } from '../config/env.js';
 import type { MemoryStore } from '../memory/types.js';
 import type { PersonalityInstructionProvider } from '../personality/service.js';
-import { GroqTextClient } from '../providers/groq.js';
+import { OllamaTextClient } from '../providers/ollamaText.js';
 import { publishActivity } from '../monitor/activityFeed.js';
 import { logger } from '../logging/logger.js';
 import { ConversationHistory } from './conversationHistory.js';
@@ -22,15 +22,18 @@ import { buildVoiceCallContextBlock, buildVoiceCallContextForMemory, recordParti
 import { FishAudioTts } from './fishAudioTts.js';
 import { FISH_AUDIO_EXPRESSION_PROMPT, stripFishAudioTagsForDisplay } from './fishAudioExpressions.js';
 import { applyVoiceActionsToReply, mapActionToExpression, shouldReactWithMotion, stripRoleplayMarkupForSpeech } from './voiceActions.js';
-import { buildLipSyncFrames } from './lipSyncFrames.js';
+import {
+  emitLunaTtsAudio,
+  lunaTtsPlaybackMs,
+  publishLunaTtsAvatarSync,
+  wavToDiscordPcm
+} from './lunaTtsOutput.js';
 
 const INPUT_RATE = 16000;
-const DISCORD_RATE = 48000;
-const DISCORD_CHANNELS = 2;
 
 export class LocalVoiceSessionManager {
   private emit: ((event: LiveClientEvent) => void) | null = null;
-  private readonly groq: GroqTextClient;
+  private readonly ollama: OllamaTextClient;
   private readonly voice: LocalVoiceService;
   private readonly conversationHistory = new ConversationHistory(10);
   private readonly conversationBySpeaker = new Map<string, ConversationHistory>();
@@ -70,7 +73,7 @@ export class LocalVoiceSessionManager {
       ...(config.LUNA_TTS_PROVIDER !== 'fish' ? { speakerWav: paths.speakerWav } : {})
     };
     this.voice = new LocalVoiceService(serviceConfig);
-    this.groq = new GroqTextClient(config);
+    this.ollama = new OllamaTextClient(config);
     this.userVoiceMemory = new UserVoiceMemoryStore(config.databasePath);
     this.lunaLife = new LunaLifeStore(config.databasePath);
     this.fishTts = config.LUNA_TTS_PROVIDER === 'fish' && config.FISH_AUDIO_API_KEY?.trim()
@@ -348,8 +351,7 @@ export class LocalVoiceSessionManager {
       : userText;
 
     const llmStarted = Date.now();
-    const reply = await this.groq.generate({
-      apiKey: 'ollama',
+    const reply = await this.ollama.generate({
       system,
       userText: prompt,
       maxCompletionTokens: 150,
@@ -397,7 +399,7 @@ export class LocalVoiceSessionManager {
       const lifePromise = this.config.LUNA_LIFE_MEMORY
         ? updateLunaLife({
           store: this.lunaLife,
-          groq: this.groq,
+          ollama: this.ollama,
           guildId: speaker.guildId,
           callerName: speaker.displayName,
           callerRelationship: existing?.relationship ?? null,
@@ -411,7 +413,7 @@ export class LocalVoiceSessionManager {
       void Promise.all([
         updateUserVoiceMemory({
           store: this.userVoiceMemory,
-          groq: this.groq,
+          ollama: this.ollama,
           guildId: speaker.guildId,
           userId: speaker.userId,
           displayName: speaker.displayName,
@@ -423,7 +425,7 @@ export class LocalVoiceSessionManager {
         }),
         updateUserRelationship({
           store: this.userVoiceMemory,
-          groq: this.groq,
+          ollama: this.ollama,
           guildId: speaker.guildId,
           userId: speaker.userId,
           displayName: speaker.displayName,
@@ -584,31 +586,11 @@ export class LocalVoiceSessionManager {
     const ttsMs = Date.now() - ttsStarted;
     const discordPcm = await wavToDiscordPcm(this.config.FFMPEG_BINARY, outWav);
     safeUnlink(outWav);
-    this.emitLipSync(discordPcm);
-    this.emitFullPcmAudio(discordPcm);
-    const playbackMs = pcmDurationMs(discordPcm, DISCORD_RATE, DISCORD_CHANNELS) + 1_000;
+    publishLunaTtsAvatarSync(discordPcm, displayText || cleaned);
+    emitLunaTtsAudio(discordPcm, this.closed ? null : this.emit);
+    const playbackMs = lunaTtsPlaybackMs(discordPcm);
     await delay(playbackMs);
     return { ttsMs, playbackMs };
-  }
-
-  private emitLipSync(discordPcm: Buffer) {
-    if (this.closed || !discordPcm.length) return;
-    const frameMs = 50;
-    const open = buildLipSyncFrames(discordPcm, DISCORD_RATE, DISCORD_CHANNELS, frameMs);
-    this.emit?.({ type: 'avatar.lipsync', payload: { frameMs, open } });
-  }
-
-  private emitFullPcmAudio(discordPcm: Buffer) {
-    if (this.closed || !discordPcm.length) return;
-    logger.info('Local voice playing full TTS clip', {
-      pcmBytes: discordPcm.length,
-      durationMs: pcmDurationMs(discordPcm, DISCORD_RATE, DISCORD_CHANNELS)
-    });
-    this.emit?.({
-      type: 'audio',
-      data: discordPcm.toString('base64'),
-      mimeType: 'audio/pcm;rate=48000;channels=2'
-    });
   }
 
   private handleTurnError(error: unknown) {
@@ -699,37 +681,6 @@ function writeWav16kMono(path: string, pcm: Buffer) {
   header.write('data', 36);
   header.writeUInt32LE(pcm.length, 40);
   writeFileSync(path, Buffer.concat([header, pcm]));
-}
-
-async function wavToDiscordPcm(ffmpegBinary: string, wavPath: string) {
-  return new Promise<Buffer>((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    const child = spawn(ffmpegBinary, [
-      '-hide_banner', '-loglevel', 'error',
-      '-i', wavPath,
-      '-af', 'aresample=48000:resampler=soxr',
-      '-f', 's16le',
-      '-ar', String(DISCORD_RATE),
-      '-ac', String(DISCORD_CHANNELS),
-      'pipe:1'
-    ], { windowsHide: true });
-    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => {
-      const message = chunk.toString('utf8').trim();
-      if (message) logger.warn('ffmpeg wav decode stderr', { message });
-    });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolve(Buffer.concat(chunks));
-      else reject(new Error(`ffmpeg exited with code ${code}`));
-    });
-  });
-}
-
-function pcmDurationMs(pcm: Buffer, sampleRate: number, channels: number) {
-  const bytesPerSecond = sampleRate * channels * 2;
-  if (bytesPerSecond <= 0 || pcm.length <= 0) return 0;
-  return Math.max(0, Math.round((pcm.length / bytesPerSecond) * 1000));
 }
 
 function safeUnlink(path: string) {

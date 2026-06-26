@@ -1,6 +1,8 @@
 import type { LiveClientEvent } from '../live/liveSession.js';
 
-type AvatarEvent = Extract<LiveClientEvent, { type: 'avatar.state' | 'avatar.expression' | 'avatar.model.change' | 'avatar.lipsync' }>;
+type AvatarEvent = Extract<LiveClientEvent, {
+  type: 'avatar.state' | 'avatar.expression' | 'avatar.model.change' | 'avatar.lipsync' | 'audio' | 'transcript';
+}>;
 
 let broadcastToApp: ((event: AvatarEvent) => void) | null = null;
 
@@ -14,6 +16,8 @@ export function broadcastAvatarEvent(event: LiveClientEvent) {
     && event.type !== 'avatar.expression'
     && event.type !== 'avatar.model.change'
     && event.type !== 'avatar.lipsync'
+    && event.type !== 'audio'
+    && event.type !== 'transcript'
   ) {
     return;
   }

@@ -14,12 +14,25 @@ This repository is the Luna Discord voice stack built on the Giada Assistant fou
 |--------|----------------|--------|
 | **Speech-to-text** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | Local Python worker (`scripts/local_voice_service.py`) |
 | **Text-to-speech** | [Fish Audio API](https://fish.audio) | `LUNA_TTS_PROVIDER=fish` — cloned/library voice via `FISH_AUDIO_REFERENCE_ID` |
-| **Brain** | [Ollama](https://ollama.com) | OpenAI-compatible API at `GROQ_API_URL` (e.g. `qwen3.5:4b`) — not Groq Cloud, not Gemini |
+| **Brain** | [Ollama](https://ollama.com) | OpenAI-compatible API at `OLLAMA_API_URL` (e.g. `qwen3.5:4b`) — not Groq Cloud, not Gemini |
 | **Discord voice** | `@discordjs/voice` + FFmpeg | PCM in/out of the voice channel |
-| **Avatar** | Fluffy Live2D shell | Optional; launched by `start-luna.bat` |
+| **Avatar** | Fluffy Live2D shell | Optional; launched by `start-luna.bat`. Plays TTS audio locally when Luna is **not** in a Discord voice channel (for OBS capture). Lip sync always syncs to the avatar window. |
 | **Live chat** (optional) | Twitch IRC + YouTube `pytchat` | YouTube is read-only; replies are spoken via TTS on stream |
 
-**Not used for the default Luna voice path:** Gemini Live, Gemini native audio, or cloud Groq inference.
+**Not used for the default Luna voice path:** Gemini Live, Gemini native audio, or Groq Cloud.
+
+### Ollama settings
+
+Luna uses a dedicated `OllamaTextClient` and **`OLLAMA_*` environment variables**. You do **not** need a [Groq Cloud](https://groq.com) account for the default Luna setup.
+
+| Variable | Purpose |
+|----------|---------|
+| `OLLAMA_API_URL` | Ollama’s OpenAI-compatible endpoint — usually `http://127.0.0.1:11434/v1/chat/completions` |
+| `OLLAMA_MODEL` | Your Ollama model name (e.g. `qwen3.5:4b`) |
+| `OLLAMA_TIMEOUT_MS` | Request timeout (default `180000`) |
+| `OLLAMA_REASONING_EFFORT` | `none`, `low`, `medium`, or `high` for thinking models |
+
+**Legacy:** `GROQ_API_URL` / `GROQ_MODEL` still work as fallbacks if `OLLAMA_*` is unset. The Giada **platform** path (multi-tenant Discord bot with BYOK) still uses `GROQ_*` for real Groq Cloud when configured.
 
 Fallback: set `LUNA_TTS_PROVIDER=xtts` to use local Coqui XTTS instead of Fish Audio (requires XTTS Python deps and `XTTS_SPEAKER_WAV`).
 
@@ -39,7 +52,7 @@ Fallback: set `LUNA_TTS_PROVIDER=xtts` to use local Coqui XTTS instead of Fish A
 2. Copy `.env.example` to `.env` and fill in:
    - Discord bot token and application IDs
    - `FISH_AUDIO_API_KEY` and `FISH_AUDIO_REFERENCE_ID` from [fish.audio](https://fish.audio)
-   - `GROQ_API_URL=http://127.0.0.1:11434/v1/chat/completions` and `GROQ_MODEL` matching your Ollama model
+   - `OLLAMA_API_URL=http://127.0.0.1:11434/v1/chat/completions` and `OLLAMA_MODEL` matching your Ollama model
 3. Install Python voice deps (Whisper; XTTS only if not using Fish):
 
 ```bat
@@ -72,8 +85,8 @@ start-luna.bat
 | `FISH_AUDIO_API_KEY` | Fish Audio API key |
 | `FISH_AUDIO_REFERENCE_ID` | Fish voice model ID |
 | `FISH_AUDIO_MODEL` | Fish model tier (e.g. `s2.1-pro-free`) |
-| `GROQ_API_URL` | Ollama OpenAI endpoint (`http://127.0.0.1:11434/v1/chat/completions`) |
-| `GROQ_MODEL` | Ollama model name for replies |
+| `OLLAMA_API_URL` | **Ollama** endpoint — `http://127.0.0.1:11434/v1/chat/completions` |
+| `OLLAMA_MODEL` | **Ollama** model name (e.g. `qwen3.5:4b`) |
 | `WHISPER_MODEL` | faster-whisper size (`base`, `small`, etc.) |
 | `LUNA_VOICE_INPUT_MODE=ptt` | Push-to-talk (`auto` for open mic) |
 | `LUNA_USER_VOICE_MEMORY=true` | Remember callers over time |

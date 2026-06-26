@@ -1,5 +1,5 @@
 import type { ConversationTurn } from '../live/conversationHistory.js';
-import type { GroqTextClient } from '../providers/groq.js';
+import type { OllamaTextClient } from '../providers/ollamaText.js';
 import { normalizeBulletSummary, type UserVoiceMemoryStore } from './userVoiceMemory.js';
 import { logger } from '../logging/logger.js';
 
@@ -12,7 +12,7 @@ function formatHistoryForMemory(turns: ConversationTurn[], displayName: string) 
 
 export async function updateUserRelationship(input: {
   store: UserVoiceMemoryStore;
-  groq: GroqTextClient;
+  ollama: OllamaTextClient;
   guildId: string;
   userId: string;
   displayName: string;
@@ -48,8 +48,7 @@ export async function updateUserRelationship(input: {
     `You (Luna) replied: ${input.lunaReplied}`
   ].join('\n');
 
-  const raw = await input.groq.generate({
-    apiKey: 'ollama',
+  const raw = await input.ollama.generate({
     system,
     userText,
     maxCompletionTokens: 180,

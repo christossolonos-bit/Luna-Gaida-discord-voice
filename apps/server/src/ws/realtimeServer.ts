@@ -78,7 +78,9 @@ export function attachRealtimeServer(
     getLive(context).emitCurrentStatus();
   };
 
-  const broadcastAvatarToApp = (event: Extract<LiveClientEvent, { type: 'avatar.state' | 'avatar.expression' | 'avatar.model.change' | 'avatar.lipsync' }>) => {
+  const broadcastAvatarToApp = (event: Extract<LiveClientEvent, {
+    type: 'avatar.state' | 'avatar.expression' | 'avatar.model.change' | 'avatar.lipsync' | 'audio' | 'transcript';
+  }>) => {
     for (const [socket, socketContext] of sockets) {
       if (socketContext !== 'app') continue;
       if (socket.readyState === socket.OPEN) {

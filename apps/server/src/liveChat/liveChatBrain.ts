@@ -1,18 +1,18 @@
 import type { AppConfig } from '../config/env.js';
 import type { PersonalityInstructionProvider } from '../personality/service.js';
-import { GroqTextClient } from '../providers/groq.js';
+import { OllamaTextClient } from '../providers/ollamaText.js';
 import { stripRoleplayMarkupForSpeech } from '../live/voiceActions.js';
 import { sanitizeVoiceReply } from '../live/voiceReply.js';
 
 export class LiveChatBrain {
-  private readonly groq: GroqTextClient;
+  private readonly ollama: OllamaTextClient;
   private readonly history: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
   constructor(
     private readonly config: AppConfig,
     private readonly personality: PersonalityInstructionProvider
   ) {
-    this.groq = new GroqTextClient(config);
+    this.ollama = new OllamaTextClient(config);
   }
 
   async generateReply(platform: 'twitch' | 'youtube', author: string, text: string) {
@@ -37,8 +37,7 @@ export class LiveChatBrain {
       ? `${historyBlock}\nViewer ${author}: ${text}`
       : `Viewer ${author}: ${text}`;
 
-    const raw = await this.groq.generate({
-      apiKey: 'ollama',
+    const raw = await this.ollama.generate({
       system,
       userText: prompt,
       maxCompletionTokens: 120,

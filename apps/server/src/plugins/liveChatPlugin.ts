@@ -1,6 +1,7 @@
 import type { GiadaPlugin } from './plugin.js';
 import type { AppConfig } from '../config/env.js';
 import type { PersonalityInstructionProvider } from '../personality/service.js';
+import type { AvatarTtsService } from '../live/avatarTtsService.js';
 import { logger } from '../logging/logger.js';
 import { LiveChatCoordinator } from '../liveChat/liveChatCoordinator.js';
 import type { DiscordPlugin } from './discord/discordPlugin.js';
@@ -12,7 +13,8 @@ export class LiveChatPlugin implements GiadaPlugin {
   constructor(
     private readonly config: AppConfig,
     private readonly personality: PersonalityInstructionProvider,
-    private readonly discord?: DiscordPlugin
+    private readonly discord?: DiscordPlugin,
+    private readonly avatarTts?: AvatarTtsService | null
   ) {}
 
   async start() {
@@ -24,7 +26,16 @@ export class LiveChatPlugin implements GiadaPlugin {
     }
 
     this.coordinator = new LiveChatCoordinator(this.config, this.personality, {
-      speakTts: async (text) => this.discord?.speakLiveChatTts(text) ?? false
+      speakTts: async (text) => {
+        if (await this.discord?.speakLiveChatTts(text)) {
+          return true;
+        }
+        if (this.avatarTts) {
+          await this.avatarTts.speakLine(text, { publish: true });
+          return true;
+        }
+        return false;
+      }
     });
     await this.coordinator.start();
     logger.info('Live chat plugin started', {

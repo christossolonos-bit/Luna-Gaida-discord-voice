@@ -78,18 +78,23 @@ export class GroqTextClient {
       if (!selected || attemptedKeyIds.has(selected.id)) break;
       attemptedKeyIds.add(selected.id);
 
-      const response = await fetch(this.config.GROQ_API_URL, {
+      const localOllama = explicitKey === 'ollama';
+      const apiUrl = localOllama ? this.config.ollamaApiUrl : this.config.GROQ_API_URL;
+      const model = localOllama ? this.config.ollamaModel : this.config.GROQ_MODEL;
+      const timeoutMs = localOllama ? this.config.ollamaTimeoutMs : this.config.GROQ_TIMEOUT_MS;
+
+      const response = await fetch(apiUrl, {
         method: 'POST',
         headers: { Authorization: `Bearer ${selected.value}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: this.config.GROQ_MODEL,
+          model,
           messages,
           ...(tools.length ? { tools: tools.map((declaration) => ({ type: 'function', function: normalizeDeclaration(declaration) })), tool_choice: 'auto' } : {}),
           temperature,
           max_completion_tokens: maxCompletionTokens,
-          ...ollamaRequestExtras(this.config)
+          ...ollamaRequestExtras(this.config, localOllama)
         }),
-        signal: AbortSignal.timeout(this.config.GROQ_TIMEOUT_MS)
+        signal: AbortSignal.timeout(timeoutMs)
       });
       const raw = await response.text();
       let payload: GroqResponse;
@@ -119,9 +124,11 @@ class GroqRequestError extends Error {
   }
 }
 
-function ollamaRequestExtras(config: AppConfig) {
-  if (!isOllamaEndpoint(config.GROQ_API_URL)) return {};
-  const effort = config.GROQ_REASONING_EFFORT ?? 'none';
+function ollamaRequestExtras(config: AppConfig, localOllama: boolean) {
+  if (!localOllama && !isOllamaEndpoint(config.GROQ_API_URL)) return {};
+  const effort = localOllama
+    ? config.ollamaReasoningEffort
+    : (config.GROQ_REASONING_EFFORT ?? config.ollamaReasoningEffort ?? 'none');
   return {
     reasoning_effort: effort,
     chat_template_kwargs: { enable_thinking: effort === 'none' ? false : true }

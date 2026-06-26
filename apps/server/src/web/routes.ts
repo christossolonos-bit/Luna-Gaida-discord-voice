@@ -125,7 +125,12 @@ export async function registerWebRoutes(app: FastifyInstance, config: AppConfig,
       })),
       textModels: [
         { id: 'auto', name: 'Automatic' },
-        ...(runtime.features.groqText || runtime.features.byokGroq ? [{ id: 'groq', name: `Groq · ${config.GROQ_MODEL}` }] : []),
+        ...(runtime.features.groqText || runtime.features.byokGroq ? [{
+          id: 'groq',
+          name: config.GIADA_VOICE_PROVIDER === 'local'
+            ? `Ollama · ${config.ollamaModel}`
+            : `Groq · ${config.GROQ_MODEL}`
+        }] : []),
         ...(runtime.features.geminiText ? [{ id: 'gemini', name: `Gemini Live · ${config.GEMINI_MODEL}` }] : [])
       ],
       voiceModels: runtime.features.geminiVoice ? [

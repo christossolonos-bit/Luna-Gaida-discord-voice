@@ -25,7 +25,13 @@ const envSchema = z.object({
   GEMINI_API_VERSION: z.string().default('v1alpha'),
   NVIDIA_NIM_URL: z.string().url().default('https://integrate.api.nvidia.com/v1/chat/completions'),
   NVIDIA_IMAGE_MODEL: z.string().default('moonshotai/kimi-k2.6'),
+  OLLAMA_API_URL: z.string().url().optional(),
+  OLLAMA_MODEL: z.string().optional(),
+  OLLAMA_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  OLLAMA_REASONING_EFFORT: z.enum(['none', 'low', 'medium', 'high']).optional(),
+  /** @deprecated Use OLLAMA_* for local Luna. Kept for Giada platform Groq Cloud routing. */
   GROQ_API_URL: z.string().url().default('https://api.groq.com/openai/v1/chat/completions'),
+  /** @deprecated Use OLLAMA_MODEL for local Luna. */
   GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
   GROQ_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
   GROQ_REASONING_EFFORT: z.enum(['none', 'low', 'medium', 'high']).optional(),
@@ -145,8 +151,26 @@ export function loadConfig() {
   const twitchLiveChat = envFlag('LUNA_TWITCH_LIVE_CHAT') ?? Boolean(twitchOAuthToken && twitchChannel);
   const youtubeLiveChat = envFlag('LUNA_YOUTUBE_LIVE_CHAT') ?? false;
 
+  const ollamaApiUrl = parsed.OLLAMA_API_URL
+    ?? envString('OLLAMA_API_URL')
+    ?? envString('GROQ_API_URL')
+    ?? 'http://127.0.0.1:11434/v1/chat/completions';
+  const ollamaModel = parsed.OLLAMA_MODEL
+    ?? envString('OLLAMA_MODEL')
+    ?? envString('GROQ_MODEL')
+    ?? 'qwen3.5:4b';
+  const ollamaTimeoutMs = parsed.OLLAMA_TIMEOUT_MS
+    ?? parsed.GROQ_TIMEOUT_MS;
+  const ollamaReasoningEffort = parsed.OLLAMA_REASONING_EFFORT
+    ?? parsed.GROQ_REASONING_EFFORT
+    ?? 'none';
+
   return {
     ...parsed,
+    ollamaApiUrl,
+    ollamaModel,
+    ollamaTimeoutMs,
+    ollamaReasoningEffort,
     twitchUsername,
     twitchChannel,
     twitchClientId,

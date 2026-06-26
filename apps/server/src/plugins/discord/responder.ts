@@ -321,10 +321,10 @@ export class DiscordTextResponder {
         if (reservation) await this.platform!.reconcileUsage(reservation, 1, true);
         return { text };
       } catch (error) {
-        logger.warn('Groq Discord text generation failed; attempting NVIDIA NIM fallback', {
+        logger.warn('Discord text generation failed; attempting NVIDIA NIM fallback', {
           guildId: input.guildId,
           channelId: input.channelId,
-          model: this.config.GROQ_MODEL,
+          model: provider.route.reason === 'legacy_local' ? this.config.ollamaModel : this.config.GROQ_MODEL,
           credential: provider.route.credential,
           routeReason: provider.route.reason,
           nsfwAllowed: input.channelNsfw,

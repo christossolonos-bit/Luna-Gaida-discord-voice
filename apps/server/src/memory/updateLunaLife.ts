@@ -1,11 +1,11 @@
-import type { GroqTextClient } from '../providers/groq.js';
+import type { OllamaTextClient } from '../providers/ollamaText.js';
 import { lunaLifeBootstrap, type LunaLifeStore } from './lunaLifeStore.js';
 import { normalizeBulletSummary } from './userVoiceMemory.js';
 import { logger } from '../logging/logger.js';
 
 export async function updateLunaLife(input: {
   store: LunaLifeStore;
-  groq: GroqTextClient;
+  ollama: OllamaTextClient;
   guildId: string;
   callerName: string;
   callerRelationship: string | null;
@@ -47,8 +47,7 @@ export async function updateLunaLife(input: {
     'Update Luna\'s life journal based on what she chose to say and how this person affects her.'
   ].join('\n');
 
-  const raw = await input.groq.generate({
-    apiKey: 'ollama',
+  const raw = await input.ollama.generate({
     system,
     userText,
     maxCompletionTokens: 260,

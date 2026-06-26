@@ -147,7 +147,6 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
   private userInputMutedUntil = 0;
   private localTtsPlaying = false;
   private localTtsQueue: Promise<void> = Promise.resolve();
-  private pendingAvatarLipSync: { frameMs: number; open: number[] } | null = null;
   private diagnostics: VoiceBridgeDiagnostics = {
     attached: false,
     channelId: null,
@@ -927,11 +926,7 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
 
   private handleLiveEvent(event: LiveClientEvent) {
     if (event.type === 'avatar.lipsync') {
-      if (this.bypassVoiceChanger) {
-        this.pendingAvatarLipSync = event.payload;
-      } else {
-        broadcastAvatarEvent(event);
-      }
+      return;
     } else if (event.type === 'avatar.state' || event.type === 'avatar.expression' || event.type === 'avatar.model.change') {
       broadcastAvatarEvent(event);
     }
@@ -981,13 +976,17 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     if (event.type !== 'audio') {
       return;
     }
+    const pcm = Buffer.from(event.data, 'base64');
+    const discordReady = event.mimeType === 'audio/pcm;rate=48000;channels=2';
+    if (!this.getStatus().attached) {
+      broadcastAvatarEvent(event);
+      return;
+    }
     if (this.activeInputUsers.size > 0 && !this.bypassVoiceChanger) {
       this.mixer.clearAssistant();
       this.voiceChanger.reset();
       return;
     }
-    const pcm = Buffer.from(event.data, 'base64');
-    const discordReady = event.mimeType === 'audio/pcm;rate=48000;channels=2';
     this.diagnostics.geminiAudioEvents += 1;
     this.diagnostics.geminiOutputBytes += pcm.length;
     this.diagnostics.lastGeminiAudioAt = new Date().toISOString();
@@ -1057,8 +1056,6 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
       this.mixer.clearAssistant();
 
       const durationMs = pcmDurationMs(discordPcm, DISCORD_RATE, DISCORD_CHANNELS);
-      const lipSync = this.pendingAvatarLipSync;
-      this.pendingAvatarLipSync = null;
       const stream = Readable.from(discordPcm);
       const resource = createAudioResource(stream, { inputType: StreamType.Raw });
 
@@ -1077,9 +1074,6 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
       let sawPlaying = false;
       const onStateChange = (_old: AudioPlayerState, newState: AudioPlayerState) => {
         if (newState.status === AudioPlayerStatus.Playing) {
-          if (!sawPlaying && lipSync) {
-            broadcastAvatarEvent({ type: 'avatar.lipsync', payload: lipSync });
-          }
           sawPlaying = true;
         }
         if (sawPlaying && newState.status === AudioPlayerStatus.Idle) {

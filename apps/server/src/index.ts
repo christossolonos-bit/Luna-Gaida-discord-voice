@@ -23,6 +23,7 @@ import { BrowserRealtimeSession } from './ws/browserSession.js';
 import { registerMonitorRoutes } from './monitor/routes.js';
 import { UserVoiceMemoryStore } from './memory/userVoiceMemory.js';
 import { LunaLifeStore } from './memory/lunaLifeStore.js';
+import { AvatarTtsService } from './live/avatarTtsService.js';
 import { z, ZodError } from 'zod';
 
 const config = loadConfig();
@@ -76,7 +77,8 @@ const discord = config.DISCORD_SHARDING_ENABLED
   : new DiscordPlugin(config, memory, personality, platform?.store);
 
 plugins.register(discord);
-plugins.register(new LiveChatPlugin(config, personality, discord instanceof DiscordPlugin ? discord : undefined));
+const avatarTts = config.GIADA_VOICE_PROVIDER === 'local' ? new AvatarTtsService(config) : null;
+plugins.register(new LiveChatPlugin(config, personality, discord instanceof DiscordPlugin ? discord : undefined, avatarTts));
 
 await registerMonitorRoutes(app, () => discord.getStatus(), 'startVoicePtt' in discord ? {
   defaultUserId: config.GIADA_OWNER_DISCORD_USER_ID,
@@ -99,6 +101,9 @@ app.get('/health', async () => {
       twitch: config.twitchLiveChat,
       youtube: config.youtubeLiveChat && Boolean(config.youtubeCheckUrl)
     },
+    ollama: config.GIADA_VOICE_PROVIDER === 'local'
+      ? { model: config.ollamaModel, url: config.ollamaApiUrl }
+      : null,
     platformConfigured: Boolean(platform)
   };
 });

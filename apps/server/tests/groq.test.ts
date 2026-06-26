@@ -5,12 +5,40 @@ import type { PlatformStore } from '../src/platform/store.js';
 
 const config = {
   GROQ_API_URL: 'https://api.groq.test/chat/completions',
-  GROQ_MODEL: 'llama-3.3-70b-versatile'
+  GROQ_MODEL: 'llama-3.3-70b-versatile',
+  GROQ_TIMEOUT_MS: 30_000
 } as AppConfig;
 
 describe('Groq text generation', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('uses Ollama config when apiKey is ollama', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: 'Local reply.' } }]
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new GroqTextClient({
+      GROQ_API_URL: 'https://api.groq.com/openai/v1/chat/completions',
+      GROQ_MODEL: 'llama-3.3-70b-versatile',
+      GROQ_TIMEOUT_MS: 30_000,
+      ollamaApiUrl: 'http://127.0.0.1:11434/v1/chat/completions',
+      ollamaModel: 'qwen3.5:4b',
+      ollamaTimeoutMs: 30_000,
+      ollamaReasoningEffort: 'none'
+    } as AppConfig);
+    await expect(client.generate({
+      apiKey: 'ollama',
+      system: 'System prompt',
+      userText: 'User prompt'
+    })).resolves.toBe('Local reply.');
+
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe('http://127.0.0.1:11434/v1/chat/completions');
+    const body = JSON.parse(String(init?.body));
+    expect(body.model).toBe('qwen3.5:4b');
   });
 
   it('retries without tools when Groq generates an invalid function call', async () => {
