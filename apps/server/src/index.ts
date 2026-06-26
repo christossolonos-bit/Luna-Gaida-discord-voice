@@ -12,6 +12,7 @@ import { LiveSessionManager } from './live/liveSession.js';
 import { attachRealtimeServer } from './ws/realtimeServer.js';
 import { DiscordPlugin, isUsableDiscordToken } from './plugins/discord/discordPlugin.js';
 import { DiscordShardManagerPlugin } from './plugins/discord/discordShardManager.js';
+import { LiveChatPlugin } from './plugins/liveChatPlugin.js';
 import { PluginManager } from './plugins/plugin.js';
 import { logger } from './logging/logger.js';
 import { createPlatform } from './platform/bootstrap.js';
@@ -75,6 +76,7 @@ const discord = config.DISCORD_SHARDING_ENABLED
   : new DiscordPlugin(config, memory, personality, platform?.store);
 
 plugins.register(discord);
+plugins.register(new LiveChatPlugin(config, personality, discord instanceof DiscordPlugin ? discord : undefined));
 
 await registerMonitorRoutes(app, () => discord.getStatus(), 'startVoicePtt' in discord ? {
   defaultUserId: config.GIADA_OWNER_DISCORD_USER_ID,
@@ -93,6 +95,10 @@ app.get('/health', async () => {
       nvidia: keys.some((key) => key.provider === 'nvidia' && key.enabled)
     },
     discordConfigured: isUsableDiscordToken(config.DISCORD_BOT_TOKEN),
+    liveChat: {
+      twitch: config.twitchLiveChat,
+      youtube: config.youtubeLiveChat && Boolean(config.youtubeCheckUrl)
+    },
     platformConfigured: Boolean(platform)
   };
 });

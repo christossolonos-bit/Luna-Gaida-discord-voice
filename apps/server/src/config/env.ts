@@ -93,15 +93,79 @@ const envSchema = z.object({
   LUNA_TTS_PROVIDER: z.enum(['xtts', 'fish']).default('xtts'),
   FISH_AUDIO_API_KEY: z.string().optional(),
   FISH_AUDIO_REFERENCE_ID: z.string().optional(),
-  FISH_AUDIO_MODEL: z.string().default('s2.1-pro-free')
+  FISH_AUDIO_MODEL: z.string().default('s2.1-pro-free'),
+  LOCAL_LIVE_CHAT_SCRIPT: z.string().default('./scripts/live_chat_service.py'),
+  TWITCH_OAUTH_TOKEN: z.string().optional(),
+  TWITCH_USERNAME: z.string().optional(),
+  TWITCH_CLIENT_ID: z.string().optional(),
+  TWITCH_CLIENT_SECRET: z.string().optional(),
+  TWITCH_CHANNEL: z.string().optional(),
+  LUNA_CREATOR_NAME: z.string().optional(),
+  LUNA_OWNER_TWITCH_LOGIN: z.string().optional(),
+  LUNA_TWITCH_LIVE_CHAT: z.enum(['true', 'false', '1', '0']).optional(),
+  LUNA_TWITCH_LIVE_AUTO_REPLY: z.enum(['true', 'false', '1', '0']).optional(),
+  LUNA_TWITCH_LIVE_AUTO_TRIGGER: z.string().optional(),
+  LUNA_YOUTUBE_LIVE_CHAT: z.enum(['true', 'false', '1', '0']).optional(),
+  LUNA_YOUTUBE_LIVE_CHECK_URL: z.string().optional(),
+  LUNA_YOUTUBE_LIVE_AUTO_REPLY: z.enum(['true', 'false', '1', '0']).optional(),
+  LUNA_YOUTUBE_LIVE_AUTO_TRIGGER: z.string().optional(),
+  LUNA_YOUTUBE_LIVE_POLL_SEC: z.coerce.number().positive().optional(),
+  YOUTUBE_CLIENT_ID: z.string().optional(),
+  YOUTUBE_CLIENT_SECRET: z.string().optional(),
+  YOUTUBE_REFRESH_TOKEN: z.string().optional()
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
 
+function envString(...keys: string[]) {
+  for (const key of keys) {
+    const value = process.env[key]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function envFlag(...keys: string[]) {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (value === undefined) continue;
+    if (value === '1' || value.toLowerCase() === 'true') return true;
+    if (value === '0' || value.toLowerCase() === 'false') return false;
+  }
+  return undefined;
+}
+
 export function loadConfig() {
   const parsed = envSchema.parse(process.env);
+  const twitchUsername = parsed.TWITCH_USERNAME ?? envString('twitch_username', 'TWITCH_USERNAME');
+  const twitchChannel = parsed.TWITCH_CHANNEL ?? envString('twitch_channel', 'TWITCH_CHANNEL');
+  const twitchClientId = parsed.TWITCH_CLIENT_ID ?? envString('twitch_client_id', 'TWITCH_CLIENT_ID');
+  const twitchClientSecret = parsed.TWITCH_CLIENT_SECRET ?? envString('twitch_client_secret', 'TWITCH_CLIENT_SECRET');
+  const twitchOAuthToken = parsed.TWITCH_OAUTH_TOKEN ?? envString('TWITCH_OAUTH_TOKEN');
+  const twitchLiveChat = envFlag('LUNA_TWITCH_LIVE_CHAT') ?? Boolean(twitchOAuthToken && twitchChannel);
+  const youtubeLiveChat = envFlag('LUNA_YOUTUBE_LIVE_CHAT') ?? false;
+
   return {
     ...parsed,
+    twitchUsername,
+    twitchChannel,
+    twitchClientId,
+    twitchClientSecret,
+    twitchOAuthToken,
+    twitchLiveChat,
+    twitchAutoReply: envFlag('LUNA_TWITCH_LIVE_AUTO_REPLY') ?? true,
+    twitchAutoTrigger: parsed.LUNA_TWITCH_LIVE_AUTO_TRIGGER ?? envString('LUNA_TWITCH_LIVE_AUTO_TRIGGER') ?? 'all',
+    youtubeLiveChat,
+    youtubeCheckUrl: parsed.LUNA_YOUTUBE_LIVE_CHECK_URL ?? envString('LUNA_YOUTUBE_LIVE_CHECK_URL'),
+    youtubeAutoReply: envFlag('LUNA_YOUTUBE_LIVE_AUTO_REPLY') ?? true,
+    youtubeAutoTrigger: parsed.LUNA_YOUTUBE_LIVE_AUTO_TRIGGER ?? envString('LUNA_YOUTUBE_LIVE_AUTO_TRIGGER') ?? 'all',
+    youtubePollSec: parsed.LUNA_YOUTUBE_LIVE_POLL_SEC ?? 0.5,
+    lunaCreatorName: parsed.LUNA_CREATOR_NAME ?? envString('LUNA_CREATOR_NAME'),
+    lunaOwnerTwitchLogin: parsed.LUNA_OWNER_TWITCH_LOGIN ?? envString('LUNA_OWNER_TWITCH_LOGIN'),
+    youtubeClientId: parsed.YOUTUBE_CLIENT_ID ?? envString('YOUTUBE_CLIENT_ID', 'youtube_client_id'),
+    youtubeClientSecret: parsed.YOUTUBE_CLIENT_SECRET ?? envString('YOUTUBE_CLIENT_SECRET', 'youtube_client_secret'),
+    youtubeRefreshToken: parsed.YOUTUBE_REFRESH_TOKEN ?? envString('YOUTUBE_REFRESH_TOKEN', 'youtube_refresh_token'),
+    liveChatScriptPath: resolveProjectFile(parsed.LOCAL_LIVE_CHAT_SCRIPT),
     wakePhrases: parseWakePhrases(parsed.LUNA_WAKE_PHRASES),
     DISCORD_VOICE_CHANGER_CONFIG: resolveProjectFile(parsed.DISCORD_VOICE_CHANGER_CONFIG),
     allowedOrigins: parsed.GIADA_ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean),

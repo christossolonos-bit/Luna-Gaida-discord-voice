@@ -2138,6 +2138,14 @@ export class DiscordPlugin implements GiadaPlugin {
     return [...this.voiceBridges.values()].find((bridge) => bridge.getStatus().attached);
   }
 
+  async speakLiveChatTts(text: string) {
+    const bridge = this.findActiveVoiceBridge();
+    if (!bridge) {
+      return false;
+    }
+    return bridge.speakLiveChatLine(text);
+  }
+
   private helpText() {
     return [
       '`/giada listen mode:here` - watch this text channel and reply when it makes sense.',

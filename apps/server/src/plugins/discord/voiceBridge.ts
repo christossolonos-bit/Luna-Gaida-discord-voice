@@ -472,6 +472,18 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     this.drainVoiceTextMessages();
   }
 
+  async speakLiveChatLine(text: string) {
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    if (!normalized || this.destroyed || !this.getStatus().attached) {
+      return false;
+    }
+    if (!(this.live instanceof LocalVoiceSessionManager)) {
+      return false;
+    }
+    await this.live.speakLine(normalized, { publish: true });
+    return true;
+  }
+
   private drainVoiceTextMessages() {
     if (!this.pendingVoiceTextMessages.length || this.destroyed) {
       return;

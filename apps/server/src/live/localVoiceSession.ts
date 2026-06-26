@@ -21,6 +21,7 @@ import { updateLunaLife } from '../memory/updateLunaLife.js';
 import { buildVoiceCallContextBlock, buildVoiceCallContextForMemory, recordParticipantNames } from './voiceCallContext.js';
 import { FishAudioTts } from './fishAudioTts.js';
 import { FISH_AUDIO_EXPRESSION_PROMPT, stripFishAudioTagsForDisplay } from './fishAudioExpressions.js';
+import { applyVoiceActionsToReply, mapActionToExpression, shouldReactWithMotion, stripRoleplayMarkupForSpeech } from './voiceActions.js';
 import { buildLipSyncFrames } from './lipSyncFrames.js';
 
 const INPUT_RATE = 16000;
@@ -330,6 +331,7 @@ export class LocalVoiceSessionManager {
       'You have free will. Your feelings toward each caller are yours alone — you may like, dislike, tolerate, adore, or stay cool with different people.',
       'Flirt when you choose to with someone you like; be distant or dry with someone who annoys you. Never fake warmth you do not feel.',
       'Your life evolves because of what you decide and who you bond with — reference that history naturally.',
+      'Stage directions use *asterisk actions* like *leans forward* or *laugh* — never say the word "asterisk" and never read the action text aloud; actions are performed or omitted from speech.',
       useFishTts
         ? 'Keep replies concise for voice: usually 2–4 sentences, under 80 words including expression tags unless they asked for detail.'
         : 'Keep replies concise for voice: usually 2–4 sentences, under 70 words unless they asked for detail.',
@@ -361,14 +363,22 @@ export class LocalVoiceSessionManager {
       return;
     }
 
-    const displayText = this.fishTts ? stripFishAudioTagsForDisplay(cleaned) : cleaned;
+    const { ttsText, displayText, actions } = applyVoiceActionsToReply(cleaned, {
+      fishTts: Boolean(this.fishTts)
+    });
+    const spokenForUi = displayText || ttsText;
+    if (!spokenForUi && actions.length === 0) {
+      this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+      return;
+    }
 
-    publishActivity({ level: 'assistant', title: 'Luna said', detail: displayText || cleaned });
-    this.lastAssistantText = displayText || cleaned;
-
-    history.add('user', userText);
-    history.add('model', displayText || cleaned);
-    this.emit?.({ type: 'transcript', speaker: 'assistant', text: displayText || cleaned, final: true });
+    if (spokenForUi) {
+      publishActivity({ level: 'assistant', title: 'Luna said', detail: spokenForUi });
+      this.lastAssistantText = spokenForUi;
+      history.add('user', userText);
+      history.add('model', spokenForUi);
+      this.emit?.({ type: 'transcript', speaker: 'assistant', text: spokenForUi, final: true });
+    }
 
     if (this.config.LUNA_USER_VOICE_MEMORY && speaker) {
       const existing = this.userVoiceMemory.get(speaker.guildId, speaker.userId);
@@ -392,7 +402,7 @@ export class LocalVoiceSessionManager {
           callerName: speaker.displayName,
           callerRelationship: existing?.relationship ?? null,
           userSaid: userText,
-          lunaReplied: cleaned,
+          lunaReplied: spokenForUi,
           existingLife: this.lunaLife.get(speaker.guildId)?.narrative ?? null,
           bonds
         })
@@ -406,7 +416,7 @@ export class LocalVoiceSessionManager {
           userId: speaker.userId,
           displayName: speaker.displayName,
           userSaid: userText,
-          lunaReplied: cleaned,
+          lunaReplied: spokenForUi,
           existingSummary: existing?.summary ?? null,
           recentHistory,
           callContext: memoryCallContext
@@ -418,7 +428,7 @@ export class LocalVoiceSessionManager {
           userId: speaker.userId,
           displayName: speaker.displayName,
           userSaid: userText,
-          lunaReplied: cleaned,
+          lunaReplied: spokenForUi,
           existingRelationship: existing?.relationship ?? null,
           recentHistory
         }),
@@ -457,7 +467,15 @@ export class LocalVoiceSessionManager {
       });
     }
 
-    const { ttsMs, playbackMs } = await this.playSpokenLine(cleaned);
+    this.emitVoiceActions(actions);
+    let ttsMs = 0;
+    let playbackMs = 0;
+    if (ttsText) {
+      const playOptions = spokenForUi ? { displayText: spokenForUi } : {};
+      ({ ttsMs, playbackMs } = await this.playSpokenLine(ttsText, playOptions));
+    } else if (actions.length) {
+      await delay(900);
+    }
     const totalMs = Date.now() - turnStarted;
     publishActivity({
       level: 'info',
@@ -521,10 +539,36 @@ export class LocalVoiceSessionManager {
     this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
   }
 
-  private async playSpokenLine(text: string, options: { publish?: boolean } = {}) {
-    const cleaned = text.trim();
+  private emitVoiceActions(actions: string[]) {
+    if (!actions.length || this.closed) return;
+    for (const action of actions) {
+      if (shouldReactWithMotion(action)) {
+        this.emit?.({ type: 'avatar.state', payload: { state: 'reacting' } });
+      }
+      const expression = mapActionToExpression(action);
+      if (expression) {
+        this.emit?.({ type: 'avatar.expression', payload: { expression, intensity: 1 } });
+      }
+    }
+  }
+
+  async speakLine(text: string, options: { publish?: boolean; displayText?: string } = {}) {
+    if (this.closed) return { ttsMs: 0, playbackMs: 0 };
+    try {
+      const result = await this.playSpokenLine(text, options);
+      this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+      return result;
+    } catch (error) {
+      this.handleTurnError(error);
+      return { ttsMs: 0, playbackMs: 0 };
+    }
+  }
+
+  private async playSpokenLine(text: string, options: { publish?: boolean; displayText?: string } = {}) {
+    const cleaned = stripRoleplayMarkupForSpeech(text.trim());
     if (!cleaned || this.closed) return { ttsMs: 0, playbackMs: 0 };
-    const displayText = this.fishTts ? stripFishAudioTagsForDisplay(cleaned) : cleaned;
+    const displayText = options.displayText
+      ?? (this.fishTts ? stripFishAudioTagsForDisplay(cleaned) : cleaned);
     if (options.publish) {
       publishActivity({ level: 'assistant', title: 'Luna said', detail: displayText || cleaned });
     }
