@@ -3,10 +3,124 @@ const memoryPanel = document.getElementById('memory-panel');
 const lifePanel = document.getElementById('life-panel');
 const connection = document.getElementById('connection');
 const pttBtn = document.getElementById('ptt-btn');
+const ttsBtn = document.getElementById('tts-btn');
 const events = new Map();
 let pttAvailable = false;
 let voiceAttached = false;
 let recording = false;
+let ttsEnabled = false;
+let ttsSocket = null;
+
+class LunaMonitorAudio {
+  constructor() {
+    this.context = new AudioContext({ sampleRate: 48_000 });
+    this.nextPlayTime = 0;
+    this.generation = 0;
+    this.queue = Promise.resolve();
+  }
+
+  async unlock() {
+    if (this.context.state === 'suspended') {
+      await this.context.resume();
+    }
+    return this.context.state === 'running';
+  }
+
+  enqueueBase64Pcm(base64) {
+    const generation = ++this.generation;
+    this.queue = this.queue.then(() => this.playBase64Pcm(base64, generation));
+    return this.queue;
+  }
+
+  async playBase64Pcm(base64, generation) {
+    if (!base64 || generation !== this.generation || !ttsEnabled) return;
+    if (this.context.state === 'suspended') {
+      await this.context.resume();
+    }
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    const int16 = new Int16Array(bytes.buffer);
+    const frameCount = Math.floor(int16.length / 2);
+    if (frameCount <= 0) return;
+
+    const left = new Float32Array(frameCount);
+    const right = new Float32Array(frameCount);
+    for (let index = 0; index < frameCount; index += 1) {
+      left[index] = (int16[index * 2] ?? 0) / 32_768;
+      right[index] = (int16[index * 2 + 1] ?? 0) / 32_768;
+    }
+
+    const audioBuffer = this.context.createBuffer(2, frameCount, 48_000);
+    audioBuffer.getChannelData(0).set(left);
+    audioBuffer.getChannelData(1).set(right);
+
+    const source = this.context.createBufferSource();
+    const gain = this.context.createGain();
+    source.buffer = audioBuffer;
+    source.connect(gain);
+    gain.connect(this.context.destination);
+
+    const scheduled = Math.max(this.context.currentTime, this.nextPlayTime);
+    source.start(scheduled);
+    this.nextPlayTime = scheduled + audioBuffer.duration;
+
+    await new Promise((resolve) => {
+      source.onended = () => {
+        if (generation === this.generation) resolve();
+      };
+    });
+  }
+}
+
+const monitorAudio = new LunaMonitorAudio();
+
+function connectTtsStream() {
+  if (ttsSocket && (ttsSocket.readyState === WebSocket.OPEN || ttsSocket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ttsSocket = new WebSocket(`${protocol}//${location.host}/realtime`);
+  ttsSocket.addEventListener('open', () => {
+    ttsSocket.send(JSON.stringify({ type: 'connect', surface: 'app', role: 'monitor' }));
+  });
+  ttsSocket.addEventListener('message', (message) => {
+    let event;
+    try {
+      event = JSON.parse(message.data);
+    } catch {
+      return;
+    }
+    if (event.type === 'audio' && ttsEnabled) {
+      void monitorAudio.enqueueBase64Pcm(event.data);
+    }
+  });
+  ttsSocket.addEventListener('close', () => {
+    ttsSocket = null;
+    if (ttsEnabled) {
+      setTimeout(connectTtsStream, 2500);
+    }
+  });
+}
+
+async function enableTts() {
+  const running = await monitorAudio.unlock();
+  if (!running) {
+    ttsBtn.textContent = 'Could not unlock audio — try again';
+    return;
+  }
+  ttsEnabled = true;
+  ttsBtn.textContent = 'Luna voice enabled';
+  ttsBtn.classList.add('enabled');
+  ttsBtn.disabled = true;
+  connectTtsStream();
+}
+
+ttsBtn.addEventListener('click', () => {
+  void enableTts();
+});
 
 function formatTime(iso) {
   return new Date(iso).toLocaleTimeString();

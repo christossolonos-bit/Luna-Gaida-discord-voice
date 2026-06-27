@@ -66,8 +66,33 @@ export function emitLunaTtsAudio(
   emit?.(event);
 }
 
+let discordVoiceBridgeCount = 0;
+
+export function isLunaElectronAudioMuted() {
+  return discordVoiceBridgeCount > 0;
+}
+
+function publishElectronAudioMute(muted: boolean) {
+  broadcastAvatarEvent({ type: 'avatar.local_audio', payload: { muted } });
+}
+
+/** Mute Fluffy local playback while Luna speaks through Discord VC (lip sync still runs). */
+export function setDiscordVoiceBridgeActive(active: boolean) {
+  if (active) {
+    discordVoiceBridgeCount += 1;
+    if (discordVoiceBridgeCount === 1) {
+      publishElectronAudioMute(true);
+    }
+    return;
+  }
+  discordVoiceBridgeCount = Math.max(0, discordVoiceBridgeCount - 1);
+  if (discordVoiceBridgeCount === 0) {
+    publishElectronAudioMute(false);
+  }
+}
+
 export function broadcastLunaTtsAudio(discordPcm: Buffer) {
-  if (!discordPcm.length) return;
+  if (!discordPcm.length || isLunaElectronAudioMuted()) return;
   broadcastAvatarEvent({
     type: 'audio',
     data: discordPcm.toString('base64'),

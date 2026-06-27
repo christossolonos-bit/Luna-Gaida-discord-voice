@@ -75,6 +75,7 @@ async function launchAvatar() {
       env: {
         ...process.env,
         LUNA_SYNC: '1',
+        ...(loadEnvValue('LUNA_TTS_VOLUME') ? { LUNA_TTS_VOLUME: loadEnvValue('LUNA_TTS_VOLUME') } : {}),
         ...(live2dModel ? { LUNA_LIVE2D_MODEL: live2dModel } : {})
       }
     });

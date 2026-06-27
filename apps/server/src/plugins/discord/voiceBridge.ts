@@ -29,6 +29,7 @@ import type { PlanFeatures } from '../../platform/features.js';
 import type { MusicController, VoiceController } from '../../tools/registry.js';
 import { logger } from '../../logging/logger.js';
 import { broadcastAvatarEvent } from '../../ws/avatarBroadcast.js';
+import { setDiscordVoiceBridgeActive } from '../../live/lunaTtsOutput.js';
 
 const DISCORD_RATE = 48000;
 const DISCORD_CHANNELS = 2;
@@ -147,6 +148,7 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
   private userInputMutedUntil = 0;
   private localTtsPlaying = false;
   private localTtsQueue: Promise<void> = Promise.resolve();
+  private discordLocalAudioTracked = false;
   private diagnostics: VoiceBridgeDiagnostics = {
     attached: false,
     channelId: null,
@@ -241,6 +243,14 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     };
     if (config.GIADA_VOICE_PROVIDER === 'local') {
       this.live = new LocalVoiceSessionManager(config, memory, personality);
+      this.live.setInitiativeHost({
+        isChannelAttached: () => this.getStatus().attached && !this.destroyed,
+        isBusy: () => this.isAssistantSpeaking()
+          || this.activeInputUsers.size > 0
+          || (this.live instanceof LocalVoiceSessionManager && this.live.isBusyForInitiative()),
+        getGuildId: () => this.guildId,
+        getParticipants: () => this.listVoiceParticipants()
+      });
     } else {
       this.live = new LiveSessionManager(config, memory, personality, {
         ...liveProviders,
@@ -284,14 +294,22 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
       this.attachConnectionStateHandler(connection);
     }
     this.channelId = channelId;
+    const wasAttached = this.diagnostics.attached;
     this.diagnostics.attached = true;
     this.diagnostics.channelId = channelId;
     this.diagnostics.connectionStatus = connection.state.status;
+    if (!wasAttached && !this.discordLocalAudioTracked) {
+      this.discordLocalAudioTracked = true;
+      setDiscordVoiceBridgeActive(true);
+    }
     connection.subscribe(this.player);
     this.attachUdpDiagnostics(connection);
 
     if (connection.state.status === VoiceConnectionStatus.Ready) {
       this.attachReceiver(connection);
+    }
+    if (this.live instanceof LocalVoiceSessionManager) {
+      this.live.notifyVoiceChannelAttached();
     }
   }
 
@@ -308,6 +326,10 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
       voiceChanger: this.voiceChanger.getStatus(),
       music: this.getMusicStatus()
     };
+  }
+
+  getParticipants() {
+    return this.listVoiceParticipants();
   }
 
   startPttRecording(userId: string) {
@@ -392,6 +414,9 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     this.stopMusicProcesses('destroyed');
     this.voiceChanger.destroy();
     this.localTtsPlaying = false;
+    if (this.live instanceof LocalVoiceSessionManager) {
+      this.live.notifyVoiceChannelDetached();
+    }
     this.mixer.destroy();
     this.player.stop(true);
     this.live.close();
@@ -401,6 +426,10 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     this.diagnostics.channelId = null;
     this.diagnostics.connectionStatus = VoiceConnectionStatus.Destroyed;
     this.diagnostics.receiverAttached = false;
+    if (this.discordLocalAudioTracked) {
+      this.discordLocalAudioTracked = false;
+      setDiscordVoiceBridgeActive(false);
+    }
   }
 
   private attachConnectionStateHandler(connection: VoiceConnection) {
@@ -471,7 +500,7 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     this.drainVoiceTextMessages();
   }
 
-  async speakLiveChatLine(text: string) {
+  async speakLiveChatLine(text: string, options?: { displayText?: string }) {
     const normalized = text.replace(/\s+/g, ' ').trim();
     if (!normalized || this.destroyed || !this.getStatus().attached) {
       return false;
@@ -479,7 +508,7 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     if (!(this.live instanceof LocalVoiceSessionManager)) {
       return false;
     }
-    await this.live.speakLine(normalized, { publish: true });
+    await this.live.speakLine(normalized, { publish: true, ...options });
     return true;
   }
 
@@ -979,7 +1008,6 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     const pcm = Buffer.from(event.data, 'base64');
     const discordReady = event.mimeType === 'audio/pcm;rate=48000;channels=2';
     if (!this.getStatus().attached) {
-      broadcastAvatarEvent(event);
       return;
     }
     if (this.activeInputUsers.size > 0 && !this.bypassVoiceChanger) {

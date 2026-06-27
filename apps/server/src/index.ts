@@ -24,6 +24,7 @@ import { registerMonitorRoutes } from './monitor/routes.js';
 import { UserVoiceMemoryStore } from './memory/userVoiceMemory.js';
 import { LunaLifeStore } from './memory/lunaLifeStore.js';
 import { AvatarTtsService } from './live/avatarTtsService.js';
+import { LunaCuriosityService } from './live/lunaCuriosityService.js';
 import { z, ZodError } from 'zod';
 
 const config = loadConfig();
@@ -71,10 +72,13 @@ const memory = new MemoryRepository(config.databasePath);
 const personality = new PersonalityService(config.databasePath);
 const voiceUserMemory = new UserVoiceMemoryStore(config.databasePath);
 const lunaLife = new LunaLifeStore(config.databasePath);
+const lunaCuriosity = config.GIADA_VOICE_PROVIDER === 'local' && config.lunaResearchEnabled
+  ? new LunaCuriosityService(config, personality, voiceUserMemory)
+  : null;
 const plugins = new PluginManager();
 const discord = config.DISCORD_SHARDING_ENABLED
   ? new DiscordShardManagerPlugin(config)
-  : new DiscordPlugin(config, memory, personality, platform?.store);
+  : new DiscordPlugin(config, memory, personality, platform?.store, voiceUserMemory, lunaLife);
 
 plugins.register(discord);
 const avatarTts = config.GIADA_VOICE_PROVIDER === 'local' ? new AvatarTtsService(config) : null;
@@ -233,15 +237,18 @@ await app.ready();
 
 server.listen(config.GIADA_SERVER_PORT, config.GIADA_SERVER_HOST, async () => {
   await plugins.startAll();
+  lunaCuriosity?.start();
   logger.info('Giada backend listening', {
     host: config.GIADA_SERVER_HOST,
     port: config.GIADA_SERVER_PORT,
     voiceProvider: config.GIADA_VOICE_PROVIDER,
-    wakeRequired: config.LUNA_WAKE_REQUIRED
+    wakeRequired: config.LUNA_WAKE_REQUIRED,
+    lunaResearch: config.lunaResearchEnabled
   });
 });
 
 process.on('SIGINT', async () => {
+  lunaCuriosity?.stop();
   await plugins.stopAll();
   platform?.store.close();
   await platform?.database.close();

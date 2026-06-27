@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark" />
   <meta name="theme-color" content="#020810" />
   <title>Luna Live Monitor</title>
-  <link rel="stylesheet" href="/monitor/style.css?v=5" />
+  <link rel="stylesheet" href="/monitor/style.css?v=6" />
 </head>
 <body>
   <header>
@@ -22,6 +22,8 @@
       <div id="voice-diag" class="stat"><strong>Last heard:</strong> —</div>
       <div id="voice-out" class="stat"><strong>Last spoke:</strong> —</div>
       <div id="last-error" class="stat"><strong>Last error:</strong> none</div>
+      <button id="tts-btn" type="button" class="tts-btn">Enable Luna voice</button>
+      <div id="tts-hint">Click once so this page can play TTS (for OBS browser capture). Lip sync stays on the Fluffy window.</div>
       <button id="ptt-btn" type="button" disabled>Hold to Talk</button>
       <div id="ptt-hint">Join voice with Luna first. Hold this button while speaking, then release to send.</div>
     </section>
@@ -38,6 +40,6 @@
       <div id="feed"><div class="empty">Waiting for events…</div></div>
     </section>
   </main>
-  <script src="/monitor/app.js?v=5"></script>
+  <script src="/monitor/app.js?v=6"></script>
 </body>
 </html>

@@ -1,12 +1,13 @@
-import { stripFishAudioTagsForDisplay } from './fishAudioExpressions.js';
+import {
+  stripFishAudioTagsForDisplay,
+  mapActionToFishTags,
+  prepareFishTtsText,
+  type FishTtsEnrichContext
+} from './fishAudioExpressions.js';
 
 const ASTERISK_ACTION = /\*([^*]+)\*/g;
 const SPOKEN_ASTERISK_ACTION = /\basterisks?\s+([^,.!?;]+?)\s+asterisks?\b/gi;
 const ITALIC_ACTION = /_([^_]+)_/g;
-
-function normalizeAction(action: string) {
-  return action.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
-}
 
 /** Remove roleplay stage directions so TTS never reads "*" or "asterisk". */
 export function stripRoleplayMarkupForSpeech(text: string) {
@@ -30,22 +31,28 @@ export function extractRoleplayActions(text: string) {
   return actions;
 }
 
-export function mapActionToFishTag(action: string): string | null {
-  const key = normalizeAction(action);
-  if (!key) return null;
-  if (/\blaugh|\bgiggle|\bchuckle|\bha ha|\bhaha/.test(key)) return '[laughing]';
-  if (/\bsigh/.test(key)) return '[sighing]';
-  if (/\bgasp/.test(key)) return '[gasping]';
-  if (/\bgroan|\bmoan/.test(key)) return '[groaning]';
-  if (/\byawn/.test(key)) return '[yawning]';
-  if (/\bwhisper/.test(key)) return '[whispering]';
-  if (/\bshout|\byell/.test(key)) return '[shouting]';
-  if (/\bcry|\bsob/.test(key)) return '[sad]';
-  return null;
+export { mapActionToFishTag, mapActionToFishTags } from './fishAudioExpressions.js';
+
+/** Convert LLM reply to Fish TTS input with tags; display text stays clean for UI. */
+export function buildFishTtsFromReply(text: string, context: FishTtsEnrichContext = {}) {
+  const actions: string[] = [];
+  const ttsWithActions = stripRoleplayMarkupForSpeech(
+    text.replace(ASTERISK_ACTION, (_, action: string) => {
+      const trimmed = action.trim();
+      if (trimmed) actions.push(trimmed);
+      const tags = mapActionToFishTags(trimmed);
+      return tags.length ? `${tags.join('')} ` : ' ';
+    })
+  );
+
+  const ttsText = prepareFishTtsText(ttsWithActions, { ...context, actions });
+  const displayText = stripFishAudioTagsForDisplay(stripRoleplayMarkupForSpeech(text));
+
+  return { ttsText, displayText, actions };
 }
 
 export function mapActionToExpression(action: string): string | null {
-  const key = normalizeAction(action);
+  const key = action.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
   if (!key) return null;
   if (/\blaugh|\bgiggle|\bchuckle|\bsmile|\bgrin/.test(key)) return 'happy';
   if (/\bsigh|\bsad|\bcry|\bsob|\bfrown/.test(key)) return 'sad';
@@ -58,25 +65,20 @@ export function mapActionToExpression(action: string): string | null {
 }
 
 export function shouldReactWithMotion(action: string) {
-  const key = normalizeAction(action);
+  const key = action.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
   return /\blaugh|\bgiggle|\bchuckle|\bear|\btail|\bperk|\bthump|\bbounce|\bwave|\bnod/.test(key);
 }
 
-export function applyVoiceActionsToReply(text: string, options: { fishTts: boolean }) {
+export function applyVoiceActionsToReply(
+  text: string,
+  options: { fishTts: boolean; relationship?: string | null }
+) {
+  if (options.fishTts) {
+    return buildFishTtsFromReply(text, { relationship: options.relationship });
+  }
+
   const actions = extractRoleplayActions(text);
-
-  const ttsText = stripRoleplayMarkupForSpeech(
-    text.replace(ASTERISK_ACTION, (_, action: string) => {
-      const trimmed = action.trim();
-      if (options.fishTts) {
-        const tag = mapActionToFishTag(trimmed);
-        return tag ? `${tag} ` : ' ';
-      }
-      return ' ';
-    }).replace(SPOKEN_ASTERISK_ACTION, ' ').replace(ITALIC_ACTION, ' ')
-  );
-
-  const displayText = stripFishAudioTagsForDisplay(stripRoleplayMarkupForSpeech(text));
-
+  const ttsText = stripRoleplayMarkupForSpeech(text);
+  const displayText = stripRoleplayMarkupForSpeech(text);
   return { ttsText, displayText, actions };
 }

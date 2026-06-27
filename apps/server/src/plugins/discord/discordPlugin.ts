@@ -47,6 +47,14 @@ import {
   type DiscordReactionSummary
 } from './responder.js';
 import { DiscordVoiceBridge } from './voiceBridge.js';
+import type { UserVoiceMemoryStore } from '../../memory/userVoiceMemory.js';
+import type { LunaLifeStore } from '../../memory/lunaLifeStore.js';
+import { LunaDmInitiativeService } from '../../live/lunaDmInitiativeService.js';
+import { LunaDmStore } from '../../memory/lunaDmStore.js';
+import {
+  generateLunaInboundDmReply,
+  pickGuildForDmUser
+} from '../../live/lunaDmInbound.js';
 
 const MAX_DISCORD_IMAGE_ATTACHMENTS = 4;
 const MAX_DISCORD_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -208,12 +216,15 @@ export class DiscordPlugin implements GiadaPlugin {
   private readonly activeVoiceAdapters = new Map<string, ActiveVoiceAdapter>();
   private readonly appliedIdentitySignatures = new Map<string, string>();
   private readonly pttControlMessages = new Map<string, { channelId: string; messageId: string }>();
+  private lunaDmService: LunaDmInitiativeService | null = null;
 
   constructor(
     private readonly config: AppConfig,
     private readonly memory: MemoryStore,
     private readonly personality: PersonalityService,
-    private readonly platform?: PlatformStore
+    private readonly platform?: PlatformStore,
+    private readonly userVoiceMemory?: UserVoiceMemoryStore,
+    private readonly lunaLife?: LunaLifeStore
   ) {
     this.settings = new DiscordSettingsStore(config.databasePath, platform ? (settings) => {
       void platform.getGuildRuntime(settings.guildId).then((runtime) => platform.updateGuildConfig(settings.guildId, {
@@ -246,10 +257,11 @@ export class DiscordPlugin implements GiadaPlugin {
       intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.DirectMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildVoiceStates
       ],
-      partials: [Partials.Channel]
+      partials: [Partials.Channel, Partials.Message]
     });
 
     this.client.on(Events.MessageCreate, (message) => {
@@ -367,6 +379,23 @@ export class DiscordPlugin implements GiadaPlugin {
       void this.restoreWatchedVoiceConnections();
       void this.initializeWatchedTextSessions();
       this.startVoiceWatchReconciliation();
+      if (
+        this.config.lunaAutonomousDm
+        && this.config.GIADA_VOICE_PROVIDER === 'local'
+        && this.userVoiceMemory
+        && this.lunaLife
+      ) {
+        this.lunaDmService = new LunaDmInitiativeService(
+          this.config,
+          this.personality,
+          this.userVoiceMemory,
+          this.lunaLife,
+          () => this.client,
+          () => this.collectUsersInActiveVoice()
+        );
+        this.lunaDmService.start();
+        logger.info('Luna autonomous DM outreach started');
+      }
     });
     this.client.on(Events.GuildCreate, (guild) => {
       void this.registerCommands();
@@ -431,6 +460,8 @@ export class DiscordPlugin implements GiadaPlugin {
   }
 
   async stop() {
+    this.lunaDmService?.stop();
+    this.lunaDmService = null;
     if (this.voiceWatchReconcileInterval) {
       clearInterval(this.voiceWatchReconcileInterval);
       this.voiceWatchReconcileInterval = null;
@@ -552,7 +583,16 @@ export class DiscordPlugin implements GiadaPlugin {
   }
 
   private async handleMessage(message: Message) {
-    if (message.author.id === this.client?.user?.id || !message.guildId) {
+    if (message.author.id === this.client?.user?.id || message.author.bot) {
+      return;
+    }
+    if (!message.guildId) {
+      void this.handleDirectMessage(message).catch((error) => {
+        logger.warn('Luna inbound DM failed', {
+          userId: message.author.id,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
       return;
     }
     const guildId = message.guildId;
@@ -649,6 +689,112 @@ export class DiscordPlugin implements GiadaPlugin {
       return;
     }
     await this.reply(message, response);
+  }
+
+  private async handleDirectMessage(message: Message) {
+    if (this.config.GIADA_VOICE_PROVIDER !== 'local') {
+      return;
+    }
+    const client = this.client;
+    if (!client?.isReady() || !message.channel.isDMBased()) {
+      return;
+    }
+
+    const safeInput = assertDiscordSafe(message.content);
+    if (!safeInput.ok) {
+      await message.reply(safeInput.text).catch(() => null);
+      return;
+    }
+    if (!safeInput.text.trim()) {
+      return;
+    }
+
+    const mutualGuildIds = await this.getMutualGuildIdsForUser(message.author.id);
+    if (!mutualGuildIds.length) {
+      logger.debug('Ignored DM from user with no mutual guilds', { userId: message.author.id });
+      return;
+    }
+
+    const guildId = pickGuildForDmUser(this.userVoiceMemory, mutualGuildIds, message.author.id);
+    const dmStore = new LunaDmStore(this.config.databasePath);
+    const displayName = message.author.displayName ?? message.author.username;
+
+    dmStore.record({
+      guildId: guildId ?? mutualGuildIds[0]!,
+      userId: message.author.id,
+      displayName,
+      message: safeInput.text,
+      reason: 'inbound'
+    });
+
+    let recentDmLines: string[] = [];
+    try {
+      const fetched = await message.channel.messages.fetch({ limit: 10 });
+      recentDmLines = [...fetched.values()]
+        .reverse()
+        .filter((msg) => msg.content?.trim())
+        .map((msg) => {
+          const name = msg.author.id === client.user?.id ? 'Luna' : (msg.author.displayName ?? msg.author.username);
+          return `${name}: ${msg.content.trim()}`;
+        })
+        .slice(-8);
+    } catch {
+      recentDmLines = [];
+    }
+
+    if ('sendTyping' in message.channel && typeof message.channel.sendTyping === 'function') {
+      await message.channel.sendTyping().catch(() => null);
+    }
+
+    const reply = await generateLunaInboundDmReply(
+      this.config,
+      this.personality,
+      this.userVoiceMemory,
+      this.lunaLife,
+      dmStore,
+      {
+        authorId: message.author.id,
+        username: message.author.username,
+        displayName,
+        text: safeInput.text,
+        guildId,
+        recentDmLines
+      }
+    );
+
+    if (!reply) {
+      logger.debug('Luna inbound DM chose not to reply', { userId: message.author.id });
+      return;
+    }
+
+    await message.reply(reply);
+    publishActivity({
+      level: 'assistant',
+      title: `Luna DM ← ${displayName}`,
+      detail: safeInput.text
+    });
+    publishActivity({
+      level: 'assistant',
+      title: `Luna DM → ${displayName}`,
+      detail: reply,
+      meta: { inbound: true }
+    });
+    logger.info('Luna replied to inbound DM', { userId: message.author.id, displayName });
+  }
+
+  private async getMutualGuildIdsForUser(userId: string) {
+    const client = this.client;
+    if (!client) return [];
+    const ids: string[] = [];
+    for (const guild of client.guilds.cache.values()) {
+      if (guild.members.cache.has(userId)) {
+        ids.push(guild.id);
+        continue;
+      }
+      const member = await guild.members.fetch(userId).catch(() => null);
+      if (member) ids.push(guild.id);
+    }
+    return ids;
   }
 
   private hasSeenVoiceTextMessage(messageId: string) {
@@ -2138,12 +2284,23 @@ export class DiscordPlugin implements GiadaPlugin {
     return [...this.voiceBridges.values()].find((bridge) => bridge.getStatus().attached);
   }
 
-  async speakLiveChatTts(text: string) {
+  private collectUsersInActiveVoice() {
+    const userIds = new Set<string>();
+    for (const bridge of this.voiceBridges.values()) {
+      if (!bridge.getStatus().attached) continue;
+      for (const person of bridge.getParticipants()) {
+        userIds.add(person.userId);
+      }
+    }
+    return userIds;
+  }
+
+  async speakLiveChatTts(text: string, options?: { displayText?: string }) {
     const bridge = this.findActiveVoiceBridge();
     if (!bridge) {
       return false;
     }
-    return bridge.speakLiveChatLine(text);
+    return bridge.speakLiveChatLine(text, options);
   }
 
   private helpText() {

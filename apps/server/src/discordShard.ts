@@ -2,14 +2,18 @@ import { loadConfig } from './config/env.js';
 import { logger } from './logging/logger.js';
 import { MemoryRepository } from './memory/repository.js';
 import { PersonalityService } from './personality/service.js';
+import { UserVoiceMemoryStore } from './memory/userVoiceMemory.js';
+import { LunaLifeStore } from './memory/lunaLifeStore.js';
 import { DiscordPlugin } from './plugins/discord/discordPlugin.js';
 import { createPlatform } from './platform/bootstrap.js';
 
 const config = loadConfig();
 const memory = new MemoryRepository(config.databasePath);
 const personality = new PersonalityService(config.databasePath);
+const voiceUserMemory = new UserVoiceMemoryStore(config.databasePath);
+const lunaLife = new LunaLifeStore(config.databasePath);
 const platform = await createPlatform(config);
-const discord = new DiscordPlugin(config, memory, personality, platform?.store);
+const discord = new DiscordPlugin(config, memory, personality, platform?.store, voiceUserMemory, lunaLife);
 
 await discord.start();
 

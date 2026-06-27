@@ -6,8 +6,7 @@ import { publishActivity } from '../monitor/activityFeed.js';
 import { logger } from '../logging/logger.js';
 import { broadcastAvatarEvent } from '../ws/avatarBroadcast.js';
 import { FishAudioTts } from './fishAudioTts.js';
-import { stripFishAudioTagsForDisplay } from './fishAudioExpressions.js';
-import { stripRoleplayMarkupForSpeech } from './voiceActions.js';
+import { applyVoiceActionsToReply, stripRoleplayMarkupForSpeech } from './voiceActions.js';
 import { LocalVoiceService, resolveLocalVoicePaths } from './localVoiceService.js';
 import {
   broadcastLunaTtsAudio,
@@ -35,6 +34,7 @@ export class AvatarTtsService {
         apiKey: config.FISH_AUDIO_API_KEY,
         referenceId: config.FISH_AUDIO_REFERENCE_ID,
         model: config.FISH_AUDIO_MODEL,
+        prosodySpeed: config.FISH_AUDIO_PROSODY_SPEED,
         tempDir: join(tmpdir(), 'giada-fish-tts')
       })
       : null;
@@ -77,12 +77,25 @@ export class AvatarTtsService {
   }
 
   private async playLine(text: string, options: { publish?: boolean; displayText?: string }) {
-    const cleaned = stripRoleplayMarkupForSpeech(text.trim());
-    if (!cleaned || this.closed) return { ttsMs: 0, playbackMs: 0 };
-    const displayText = options.displayText
-      ?? (this.fishTts ? stripFishAudioTagsForDisplay(cleaned) : cleaned);
+    const trimmed = text.trim();
+    if (!trimmed || this.closed) return { ttsMs: 0, playbackMs: 0 };
+
+    let ttsText: string;
+    let displayText: string;
+    if (options.displayText) {
+      ttsText = trimmed;
+      displayText = options.displayText;
+    } else if (this.fishTts) {
+      const prepared = applyVoiceActionsToReply(trimmed, { fishTts: true });
+      ttsText = prepared.ttsText;
+      displayText = prepared.displayText;
+    } else {
+      ttsText = stripRoleplayMarkupForSpeech(trimmed);
+      displayText = ttsText;
+    }
+    if (!ttsText) return { ttsMs: 0, playbackMs: 0 };
     if (options.publish) {
-      publishActivity({ level: 'assistant', title: 'Luna said', detail: displayText || cleaned });
+      publishActivity({ level: 'assistant', title: 'Luna said', detail: displayText || ttsText });
     }
 
     broadcastAvatarEvent({ type: 'avatar.state', payload: { state: 'speaking' } });
@@ -90,15 +103,15 @@ export class AvatarTtsService {
     const ttsStarted = Date.now();
     try {
       if (this.fishTts) {
-        await this.fishTts.synthesizeToWav(cleaned, outWav);
+        await this.fishTts.synthesizeToWav(ttsText, outWav);
       } else if (this.voice) {
-        await this.voice.synthesize(cleaned, outWav);
+        await this.voice.synthesize(ttsText, outWav);
       } else {
         throw new Error('No TTS provider configured for avatar playback');
       }
       const ttsMs = Date.now() - ttsStarted;
       const discordPcm = await wavToDiscordPcm(this.config.FFMPEG_BINARY, outWav);
-      publishLunaTtsAvatarSync(discordPcm, displayText || cleaned);
+      publishLunaTtsAvatarSync(discordPcm, displayText || ttsText);
       broadcastLunaTtsAudio(discordPcm);
       const playbackMs = lunaTtsPlaybackMs(discordPcm);
       await delay(playbackMs);

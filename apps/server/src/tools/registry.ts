@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { MemoryStore } from '../memory/types.js';
 import { classifyText } from '../policy/privacy.js';
+import { searchWeb } from '../research/webSearch.js';
 
 export interface ToolContext {
   surface: 'desktop' | 'discord' | 'browser';
@@ -111,7 +112,8 @@ export function createToolRegistry(options: ToolRegistryOptions = {}): Registere
       },
       async run(args) {
         const parsed = searchWebSchema.parse(args);
-        return searchSearxng(options.searxngUrl, parsed.query, parsed.limit ?? 5);
+        const result = await searchWeb(options.searxngUrl, parsed.query, parsed.limit ?? 5);
+        return { ...result };
       }
     },
     {
@@ -440,60 +442,4 @@ export function createToolRegistry(options: ToolRegistryOptions = {}): Registere
     }
   ];
   return tools.filter((tool) => options.memoryToolsEnabled || !memoryToolNames.has(String(tool.declaration.name)));
-}
-
-async function searchSearxng(searxngUrl: string | undefined, query: string, limit: number) {
-  if (!searxngUrl?.trim()) {
-    return { ok: false, error: 'searxng_not_configured' };
-  }
-
-  const url = new URL('/search', searxngUrl.trim());
-  url.searchParams.set('q', query);
-  url.searchParams.set('format', 'json');
-  url.searchParams.set('safesearch', '0');
-
-  const response = await fetch(url, {
-    headers: {
-      accept: 'application/json',
-      'user-agent': 'giada-assistant/0.1'
-    }
-  }).catch((error) => ({ ok: false, error } as const));
-
-  if (!response.ok) {
-    const reason = 'error' in response
-      ? response.error instanceof Error ? response.error.message : String(response.error)
-      : await response.text().catch(() => '');
-    return {
-      ok: false,
-      error: 'searxng_request_failed',
-      status: 'status' in response ? response.status : undefined,
-      reason
-    };
-  }
-
-  const payload = await response.json().catch((error) => ({ error })) as {
-    results?: Array<{ title?: unknown; url?: unknown; content?: unknown; engine?: unknown; score?: unknown }>;
-    suggestions?: unknown[];
-    error?: unknown;
-  };
-  if ('error' in payload && payload.error) {
-    return { ok: false, error: 'searxng_invalid_json', reason: payload.error instanceof Error ? payload.error.message : String(payload.error) };
-  }
-
-  const results = (payload.results ?? [])
-    .map((result) => ({
-      title: typeof result.title === 'string' ? result.title : '',
-      url: typeof result.url === 'string' ? result.url : '',
-      snippet: typeof result.content === 'string' ? result.content : '',
-      engine: typeof result.engine === 'string' ? result.engine : undefined,
-      score: typeof result.score === 'number' ? result.score : undefined
-    }))
-    .filter((result) => result.title && result.url)
-    .slice(0, limit);
-
-  return {
-    ok: true,
-    query,
-    results
-  };
 }

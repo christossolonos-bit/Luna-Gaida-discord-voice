@@ -6,6 +6,7 @@ export interface FishAudioTtsConfig {
   referenceId?: string | undefined;
   model: string;
   tempDir: string;
+  prosodySpeed?: number;
 }
 
 export class FishAudioTts {
@@ -39,7 +40,7 @@ export class FishAudioTts {
       sample_rate: 44100,
       normalize: true,
       prosody: {
-        speed: 1,
+        speed: this.config.prosodySpeed ?? 1,
         volume: 0,
         normalize_loudness: true
       }

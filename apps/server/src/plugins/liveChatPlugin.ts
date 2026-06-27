@@ -26,12 +26,12 @@ export class LiveChatPlugin implements GiadaPlugin {
     }
 
     this.coordinator = new LiveChatCoordinator(this.config, this.personality, {
-      speakTts: async (text) => {
-        if (await this.discord?.speakLiveChatTts(text)) {
+      speakTts: async (text, options) => {
+        if (this.avatarTts) {
+          await this.avatarTts.speakLine(text, { publish: true, ...options });
           return true;
         }
-        if (this.avatarTts) {
-          await this.avatarTts.speakLine(text, { publish: true });
+        if (await this.discord?.speakLiveChatTts(text, options)) {
           return true;
         }
         return false;

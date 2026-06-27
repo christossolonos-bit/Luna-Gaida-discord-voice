@@ -16,8 +16,8 @@ This repository is the Luna Discord voice stack built on the Giada Assistant fou
 | **Text-to-speech** | [Fish Audio API](https://fish.audio) | `LUNA_TTS_PROVIDER=fish` — cloned/library voice via `FISH_AUDIO_REFERENCE_ID` |
 | **Brain** | [Ollama](https://ollama.com) | OpenAI-compatible API at `OLLAMA_API_URL` (e.g. `qwen3.5:4b`) — not Groq Cloud, not Gemini |
 | **Discord voice** | `@discordjs/voice` + FFmpeg | PCM in/out of the voice channel |
-| **Avatar** | Fluffy Live2D shell | Optional; launched by `start-luna.bat`. Plays TTS audio locally when Luna is **not** in a Discord voice channel (for OBS capture). Lip sync always syncs to the avatar window. |
-| **Live chat** (optional) | Twitch IRC + YouTube `pytchat` | YouTube is read-only; replies are spoken via TTS on stream |
+| **Avatar** | Fluffy Live2D shell | Lip sync + optional TTS (click the window once to unlock audio). **Monitor** (`/monitor`) is the reliable TTS source for OBS — click **Enable Luna voice**. |
+| **Live chat** (optional) | Twitch IRC + YouTube `pytchat` | Replies spoken via TTS in Fluffy/Electron (OBS). Optional Twitch chat text with `LUNA_TWITCH_LIVE_CHAT_REPLY=1` |
 
 **Not used for the default Luna voice path:** Gemini Live, Gemini native audio, or Groq Cloud.
 
@@ -43,7 +43,7 @@ Fallback: set `LUNA_TTS_PROVIDER=xtts` to use local Coqui XTTS instead of Fish A
 - Reply in character with short, spoken answers (Fish Audio + lip-synced avatar when Fluffy is running)
 - Remember each caller across sessions (bullet notes per user)
 - Keep context across everyone in the same voice call — who's present, who spoke, what they asked
-- Read **Twitch** chat and reply in-channel; read **YouTube** live chat and speak replies via TTS (no YouTube typing)
+- Read **Twitch** and **YouTube** live chat; speak replies via TTS in the Fluffy window (for OBS). Optionally post Twitch replies as chat text (`LUNA_TWITCH_LIVE_CHAT_REPLY=1`)
 - Show a live monitor at `http://127.0.0.1:8787/monitor` while the server runs
 
 ## Quick start (Windows)
@@ -92,7 +92,8 @@ start-luna.bat
 | `LUNA_USER_VOICE_MEMORY=true` | Remember callers over time |
 | `LUNA_FLUFFY_PATH` | Path to the Fluffy Live2D Electron app |
 | `LUNA_LIVE2D_MODEL` | Default `.model3.json` for the avatar |
-| `TWITCH_OAUTH_TOKEN` / `twitch_channel` | Optional Twitch chat bot |
+| `TWITCH_OAUTH_TOKEN` / `twitch_channel` | Twitch chat read (TTS replies in Electron by default) |
+| `LUNA_TWITCH_LIVE_CHAT_REPLY=1` | Also type Twitch replies in chat (off by default) |
 | `LUNA_YOUTUBE_LIVE_CHAT=1` | Optional YouTube live chat (read → TTS) |
 | `LUNA_YOUTUBE_LIVE_CHECK_URL` | Your `@channel/live` URL |
 

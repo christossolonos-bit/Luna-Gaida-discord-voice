@@ -224,6 +224,37 @@ main > .card:nth-child(4) {
   color: var(--text-bright);
 }
 
+.tts-btn {
+  width: 100%;
+  margin-top: 0.75rem;
+  padding: 0.85rem 1.25rem;
+  border: 1px solid #2a6a40;
+  border-radius: 12px;
+  background: #0f3d28;
+  color: #b8f0d0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+
+.tts-btn:hover {
+  background: #145a36;
+}
+
+.tts-btn.enabled {
+  background: #1a4a30;
+  border-color: var(--success);
+  color: var(--success);
+}
+
+#tts-hint {
+  margin-top: 0.45rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
 #ptt-btn {
   width: 100%;
   margin-top: 0.75rem;

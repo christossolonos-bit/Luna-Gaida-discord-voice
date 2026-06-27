@@ -23,11 +23,29 @@ import { FishAudioTts } from './fishAudioTts.js';
 import { FISH_AUDIO_EXPRESSION_PROMPT, stripFishAudioTagsForDisplay } from './fishAudioExpressions.js';
 import { applyVoiceActionsToReply, mapActionToExpression, shouldReactWithMotion, stripRoleplayMarkupForSpeech } from './voiceActions.js';
 import {
+  broadcastLunaTtsAudio,
   emitLunaTtsAudio,
   lunaTtsPlaybackMs,
   publishLunaTtsAvatarSync,
   wavToDiscordPcm
 } from './lunaTtsOutput.js';
+import {
+  buildLunaInitiativePrompt,
+  LUNA_INITIATIVE_JSON_SCHEMA,
+  parseLunaInitiativeReply,
+  pickInitiativeRelationship,
+  type LunaInitiativeHost,
+  type LunaInitiativeTrigger
+} from './lunaInitiative.js';
+import { LunaResearchStore } from '../memory/lunaResearchStore.js';
+import { buildResearchContextBlock, buildMessageResearchBlock } from './researchForMessage.js';
+import type { ConversationResearchContext } from '../research/conversationResearch.js';
+import {
+  fetchConversationTopic,
+  formatConversationTopicBlock
+} from '../research/conversationTopics.js';
+
+export type { LunaInitiativeHost };
 
 const INPUT_RATE = 16000;
 
@@ -49,7 +67,13 @@ export class LocalVoiceSessionManager {
   private readonly tempDir: string;
   private readonly userVoiceMemory: UserVoiceMemoryStore;
   private readonly lunaLife: LunaLifeStore;
+  private readonly lunaResearch: LunaResearchStore;
   private readonly fishTts: FishAudioTts | null;
+  private initiativeHost: LunaInitiativeHost | null = null;
+  private initiativeTimer: ReturnType<typeof setTimeout> | null = null;
+  private joinInitiativeTimer: ReturnType<typeof setTimeout> | null = null;
+  private initiativeGeneration = 0;
+  private lastSpeechAt = Date.now();
 
   constructor(
     private readonly config: AppConfig,
@@ -76,11 +100,13 @@ export class LocalVoiceSessionManager {
     this.ollama = new OllamaTextClient(config);
     this.userVoiceMemory = new UserVoiceMemoryStore(config.databasePath);
     this.lunaLife = new LunaLifeStore(config.databasePath);
+    this.lunaResearch = new LunaResearchStore(config.databasePath);
     this.fishTts = config.LUNA_TTS_PROVIDER === 'fish' && config.FISH_AUDIO_API_KEY?.trim()
       ? new FishAudioTts({
         apiKey: config.FISH_AUDIO_API_KEY,
         referenceId: config.FISH_AUDIO_REFERENCE_ID,
         model: config.FISH_AUDIO_MODEL,
+        prosodySpeed: config.FISH_AUDIO_PROSODY_SPEED,
         tempDir: join(tmpdir(), 'giada-fish-tts')
       })
       : null;
@@ -155,6 +181,8 @@ export class LocalVoiceSessionManager {
 
   close() {
     this.closed = true;
+    this.clearInitiativeTimer();
+    this.initiativeHost = null;
     this.turnPcm = Buffer.alloc(0);
     this.capturing = false;
     this.lastAssistantText = '';
@@ -169,9 +197,350 @@ export class LocalVoiceSessionManager {
     this.close();
   }
 
+  setInitiativeHost(host: LunaInitiativeHost | null) {
+    this.initiativeHost = host;
+    if (host?.isChannelAttached() && this.config.lunaAutonomousReachOut && !this.closed) {
+      this.scheduleInitiative();
+    } else {
+      this.clearInitiativeTimer();
+    }
+  }
+
+  notifyVoiceChannelAttached() {
+    this.lastSpeechAt = Date.now();
+    if (this.config.lunaAutonomousReachOut && !this.closed) {
+      this.scheduleInitiative();
+      this.scheduleJoinInitiative();
+    }
+  }
+
+  notifyVoiceChannelDetached() {
+    this.bumpInitiativeGeneration();
+    this.clearInitiativeTimer();
+    this.clearJoinInitiativeTimer();
+  }
+
+  isBusyForInitiative() {
+    return this.processing || this.capturing;
+  }
+
+  private clearInitiativeTimer() {
+    if (this.initiativeTimer) {
+      clearTimeout(this.initiativeTimer);
+      this.initiativeTimer = null;
+    }
+  }
+
+  private clearJoinInitiativeTimer() {
+    if (this.joinInitiativeTimer) {
+      clearTimeout(this.joinInitiativeTimer);
+      this.joinInitiativeTimer = null;
+    }
+  }
+
+  private scheduleJoinInitiative() {
+    if (!this.config.lunaAutonomousReachOut || this.closed) {
+      return;
+    }
+    this.clearJoinInitiativeTimer();
+    const host = this.initiativeHost;
+    if (!host?.isChannelAttached() || !host.getParticipants().length) {
+      return;
+    }
+    const delay = 3000 + Math.random() * 4000;
+    this.joinInitiativeTimer = setTimeout(() => {
+      this.joinInitiativeTimer = null;
+      void this.offerInitiative('join');
+    }, delay);
+    this.joinInitiativeTimer.unref?.();
+  }
+
+  private noteSpeechActivity() {
+    this.lastSpeechAt = Date.now();
+    this.bumpInitiativeGeneration();
+  }
+
+  private bumpInitiativeGeneration() {
+    this.initiativeGeneration += 1;
+    this.clearInitiativeTimer();
+    if (this.config.lunaAutonomousReachOut && this.initiativeHost?.isChannelAttached() && !this.closed) {
+      this.scheduleInitiative();
+    }
+  }
+
+  private scheduleInitiative() {
+    if (!this.config.lunaAutonomousReachOut || this.closed || !this.initiativeHost?.isChannelAttached()) {
+      return;
+    }
+    this.clearInitiativeTimer();
+    const minMs = this.config.lunaInitiativeMinSec * 1000;
+    const maxMs = this.config.lunaInitiativeMaxSec * 1000;
+    const delay = minMs + Math.random() * Math.max(0, maxMs - minMs);
+    this.initiativeTimer = setTimeout(() => {
+      this.initiativeTimer = null;
+      void this.offerInitiative();
+    }, delay);
+    this.initiativeTimer.unref?.();
+  }
+
+  private canOfferInitiative() {
+    if (!this.config.lunaAutonomousReachOut || this.closed || this.processing || this.capturing) {
+      return false;
+    }
+    const host = this.initiativeHost;
+    if (!host?.isChannelAttached() || host.isBusy()) {
+      return false;
+    }
+    const guildId = host.getGuildId();
+    if (!guildId) {
+      return false;
+    }
+    const silenceMs = Date.now() - this.lastSpeechAt;
+    if (silenceMs < this.config.lunaInitiativeMinSilenceSec * 1000) {
+      return false;
+    }
+    return true;
+  }
+
+  private canOfferJoinInitiative() {
+    if (!this.config.lunaAutonomousReachOut || this.closed || this.processing || this.capturing) {
+      return false;
+    }
+    const host = this.initiativeHost;
+    if (!host?.isChannelAttached() || host.isBusy()) {
+      return false;
+    }
+    return host.getParticipants().length > 0;
+  }
+
+  private async maybePrepareConversationTopic(
+    participants: Array<{ displayName: string }>,
+    recentExchanges: string[],
+    trigger: LunaInitiativeTrigger
+  ) {
+    if (!this.config.lunaResearchEnabled) {
+      return null;
+    }
+
+    const cached = this.lunaResearch.recent(2).find(
+      (entry) => Date.now() - new Date(entry.createdAt).getTime() < 45 * 60_000
+    );
+    if (cached && trigger === 'vibe_check') {
+      return formatConversationTopicBlock({
+        mode: cached.mode as 'search' | 'rss' | 'read',
+        query: cached.query,
+        url: cached.url,
+        title: cached.title,
+        summary: cached.summary,
+        source: cached.source
+      });
+    }
+
+    try {
+      const finding = await fetchConversationTopic(this.config, {
+        recentExchanges,
+        participantNames: participants.map((person) => person.displayName),
+        trigger
+      });
+      if (!finding) return null;
+      this.lunaResearch.record({
+        source: trigger === 'join' ? 'join_topic' : 'vibe_topic',
+        mode: finding.mode,
+        query: finding.query,
+        url: finding.url,
+        title: finding.title,
+        summary: finding.summary
+      });
+      return formatConversationTopicBlock(finding);
+    } catch {
+      return null;
+    }
+  }
+
+  private async offerInitiative(trigger: LunaInitiativeTrigger = 'vibe_check') {
+    if (trigger === 'join') {
+      if (!this.canOfferJoinInitiative()) {
+        return;
+      }
+    } else if (!this.canOfferInitiative()) {
+      this.scheduleInitiative();
+      return;
+    }
+
+    const generation = this.initiativeGeneration;
+    const host = this.initiativeHost!;
+    const guildId = host.getGuildId()!;
+    const participants = host.getParticipants();
+    const participantIds = new Set(participants.map((person) => person.userId));
+    const memoryRecords = this.config.LUNA_USER_VOICE_MEMORY
+      ? this.userVoiceMemory.listForGuild(guildId)
+        .filter((record) => participantIds.has(record.userId))
+        .map((record) => ({
+          displayName: record.displayName ?? record.userId,
+          summary: record.summary,
+          relationship: record.relationship
+        }))
+      : [];
+
+    const useFishTts = Boolean(this.fishTts);
+    const recentExchanges = this.collectRecentExchanges(guildId);
+    const researchContext = this.config.lunaResearchEnabled
+      ? buildResearchContextBlock(this.lunaResearch)
+      : '';
+    const conversationTopic = await this.maybePrepareConversationTopic(
+      participants,
+      recentExchanges,
+      trigger
+    );
+    const { system, userPrompt } = buildLunaInitiativePrompt({
+      personalityInstruction: this.personality.buildInstruction('discord', { nsfwAllowed: true }),
+      guildId,
+      participants,
+      lifeNarrative: this.config.LUNA_LIFE_MEMORY ? this.lunaLife.getNarrative(guildId) : null,
+      memoryRecords,
+      recentExchanges,
+      silenceSec: (Date.now() - this.lastSpeechAt) / 1000,
+      useFishTts,
+      fishExpressionBlock: useFishTts ? FISH_AUDIO_EXPRESSION_PROMPT : '',
+      researchContext,
+      ...(conversationTopic ? { conversationTopic } : {}),
+      trigger
+    });
+
+    try {
+      this.emit?.({ type: 'avatar.state', payload: { state: 'thinking' } });
+      const raw = await this.ollama.generateJson({
+        system,
+        userText: userPrompt,
+        format: LUNA_INITIATIVE_JSON_SCHEMA,
+        maxCompletionTokens: 200,
+        temperature: 0.72
+      });
+      if (generation !== this.initiativeGeneration) {
+        this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+        if (trigger === 'vibe_check') this.scheduleInitiative();
+        return;
+      }
+      if (trigger === 'join' && !this.canOfferJoinInitiative()) {
+        this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+        this.scheduleInitiative();
+        return;
+      }
+      if (trigger === 'vibe_check' && !this.canOfferInitiative()) {
+        this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+        this.scheduleInitiative();
+        return;
+      }
+
+      const decision = parseLunaInitiativeReply(raw);
+      if (!decision?.speak || !decision.line) {
+        logger.debug('Luna vibe check — letting it ride', {
+          vibe: decision?.vibe,
+          changeVibe: decision?.changeVibe,
+          reason: decision?.reason ?? 'no speak'
+        });
+        publishActivity({
+          level: 'info',
+          title: decision?.changeVibe ? 'Luna held back' : 'Luna let the vibe ride',
+          detail: [decision?.vibe, decision?.reason].filter(Boolean).join(' — ') || 'Room feels fine'
+        });
+        this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+        this.scheduleInitiative();
+        return;
+      }
+
+      const cleaned = sanitizeVoiceReply(decision.line);
+      if (!cleaned) {
+        this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+        this.scheduleInitiative();
+        return;
+      }
+
+      const relationship = pickInitiativeRelationship(memoryRecords);
+      publishActivity({
+        level: 'assistant',
+        title: 'Luna shifting the vibe',
+        detail: [decision.vibe, decision.line].filter(Boolean).join(' → '),
+        meta: { changeVibe: true, reason: decision.reason ?? undefined }
+      });
+      await this.deliverAssistantSpeech(cleaned, {
+        surface: 'discord',
+        relationship,
+        history: this.conversationHistory,
+        userLabel: trigger === 'join' ? '(joined vc)' : '(vibe check)'
+      });
+      this.noteSpeechActivity();
+    } catch (error) {
+      logger.warn('Luna initiative failed', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+    }
+
+    if (generation === this.initiativeGeneration) {
+      this.scheduleInitiative();
+    }
+  }
+
+  private collectRecentExchanges(guildId: string, limit = 10) {
+    const lines: string[] = [];
+    for (const [key, history] of this.conversationBySpeaker) {
+      if (!key.startsWith(`${guildId}:`)) continue;
+      const name = this.participantDisplayNames.get(key) ?? 'Someone';
+      for (const turn of history.snapshot().slice(-3)) {
+        if (turn.role === 'user') lines.push(`${name}: ${turn.text}`);
+        if (turn.role === 'model') lines.push(`Luna: ${turn.text}`);
+      }
+    }
+    for (const turn of this.conversationHistory.snapshot().slice(-4)) {
+      if (turn.role === 'user') lines.push(`Caller: ${turn.text}`);
+      if (turn.role === 'model') lines.push(`Luna: ${turn.text}`);
+    }
+    return lines.slice(-limit);
+  }
+
+  private async deliverAssistantSpeech(
+    cleaned: string,
+    options: {
+      surface: LiveSurface;
+      relationship?: string | null;
+      history: ConversationHistory;
+      userLabel: string;
+    }
+  ): Promise<string> {
+    const { ttsText, displayText, actions } = applyVoiceActionsToReply(cleaned, {
+      fishTts: Boolean(this.fishTts),
+      relationship: options.relationship ?? null
+    });
+    const spokenForUi = displayText || ttsText;
+    if (!spokenForUi && actions.length === 0) {
+      this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+      return '';
+    }
+
+    if (spokenForUi) {
+      publishActivity({ level: 'assistant', title: 'Luna said', detail: spokenForUi });
+      this.lastAssistantText = spokenForUi;
+      options.history.add('user', options.userLabel);
+      options.history.add('model', spokenForUi);
+      this.emit?.({ type: 'transcript', speaker: 'assistant', text: spokenForUi, final: true });
+    }
+
+    this.emitVoiceActions(actions);
+    if (ttsText) {
+      const playOptions = spokenForUi ? { displayText: spokenForUi } : {};
+      await this.playSpokenLine(ttsText, playOptions);
+    } else if (actions.length) {
+      await delay(900);
+    }
+    this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+    return spokenForUi;
+  }
+
   private async processSpeechTurn(pcm16k: Buffer, surface: LiveSurface, speaker: VoiceSpeakerContext | null) {
     if (this.processing) return;
     this.processing = true;
+    this.noteSpeechActivity();
     const audioSec = (pcm16k.length / (INPUT_RATE * 2)).toFixed(1);
     try {
       const turnStarted = Date.now();
@@ -275,6 +644,7 @@ export class LocalVoiceSessionManager {
   private async processTextTurn(text: string, surface: LiveSurface) {
     if (this.processing) return;
     this.processing = true;
+    this.noteSpeechActivity();
     try {
       this.emit?.({ type: 'avatar.state', payload: { state: 'thinking' } });
       await this.replyToUserText(text, surface);
@@ -327,10 +697,43 @@ export class LocalVoiceSessionManager {
     const useFishTts = Boolean(this.fishTts);
     const fishExpressionBlock = useFishTts ? `\n${FISH_AUDIO_EXPRESSION_PROMPT}` : '';
 
+    const researchContext: ConversationResearchContext = {
+      recentLines: [
+        ...history.snapshot().map((turn) => `${turn.role === 'user' ? (speaker?.displayName ?? 'User') : 'Luna'}: ${turn.text}`),
+        `${speaker?.displayName ?? 'User'}: ${userText}`
+      ],
+      voiceMemorySummary: speaker && this.config.LUNA_USER_VOICE_MEMORY
+        ? this.userVoiceMemory.get(speaker.guildId, speaker.userId)?.summary ?? ''
+        : '',
+      displayName: speaker?.displayName,
+      currentMessage: userText
+    };
+
+    const researchBlock = this.config.lunaResearchEnabled
+      ? [
+        buildResearchContextBlock(this.lunaResearch),
+        await buildMessageResearchBlock(
+          this.config,
+          userText,
+          this.lunaResearch,
+          researchContext,
+          speaker
+            ? {
+              userId: speaker.userId,
+              displayName: speaker.displayName,
+              username: speaker.displayName
+            }
+            : undefined
+        )
+      ].filter(Boolean).join('\n\n')
+      : '';
+
     const system = [
       this.personality.buildInstruction(surface, { nsfwAllowed: true }),
       'You are speaking aloud in a Discord voice channel as Luna only. Your name is Luna — never Giada, never a generic assistant.',
       'Answer the actual question first. When asked about your day, hobbies, or plans, draw from your life journal below.',
+      'When someone asks about news, current events, or factual topics you looked up, use your web research notes below — do not invent headlines or facts.',
+      'When Solonaras or Travis share a link you read, comment on it naturally — your reaction and opinion, not a dry recap.',
       'You have free will. Your feelings toward each caller are yours alone — you may like, dislike, tolerate, adore, or stay cool with different people.',
       'Flirt when you choose to with someone you like; be distant or dry with someone who annoys you. Never fake warmth you do not feel.',
       'Your life evolves because of what you decide and who you bond with — reference that history naturally.',
@@ -340,6 +743,7 @@ export class LocalVoiceSessionManager {
         : 'Keep replies concise for voice: usually 2–4 sentences, under 70 words unless they asked for detail.',
       'Respond only to what the user actually said; do not invent names or facts. When someone asks what another person in the call said, use the voice call context below.',
       fishExpressionBlock,
+      researchBlock,
       lifeBlock,
       relationshipBlock,
       memoryBlock,
@@ -354,7 +758,7 @@ export class LocalVoiceSessionManager {
     const reply = await this.ollama.generate({
       system,
       userText: prompt,
-      maxCompletionTokens: 150,
+      maxCompletionTokens: useFishTts ? 220 : 150,
       temperature: 0.5
     });
     const llmMs = Date.now() - llmStarted;
@@ -365,24 +769,18 @@ export class LocalVoiceSessionManager {
       return;
     }
 
-    const { ttsText, displayText, actions } = applyVoiceActionsToReply(cleaned, {
-      fishTts: Boolean(this.fishTts)
+    const callerRelationship = speaker && this.config.LUNA_USER_VOICE_MEMORY
+      ? this.userVoiceMemory.get(speaker.guildId, speaker.userId)?.relationship ?? null
+      : null;
+
+    const spokenForUi = await this.deliverAssistantSpeech(cleaned, {
+      surface,
+      relationship: callerRelationship,
+      history,
+      userLabel: userText
     });
-    const spokenForUi = displayText || ttsText;
-    if (!spokenForUi && actions.length === 0) {
-      this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
-      return;
-    }
 
-    if (spokenForUi) {
-      publishActivity({ level: 'assistant', title: 'Luna said', detail: spokenForUi });
-      this.lastAssistantText = spokenForUi;
-      history.add('user', userText);
-      history.add('model', spokenForUi);
-      this.emit?.({ type: 'transcript', speaker: 'assistant', text: spokenForUi, final: true });
-    }
-
-    if (this.config.LUNA_USER_VOICE_MEMORY && speaker) {
+    if (this.config.LUNA_USER_VOICE_MEMORY && speaker && spokenForUi) {
       const existing = this.userVoiceMemory.get(speaker.guildId, speaker.userId);
       const recentHistory = history.snapshot();
       const memoryCallContext = buildVoiceCallContextForMemory({
@@ -469,25 +867,16 @@ export class LocalVoiceSessionManager {
       });
     }
 
-    this.emitVoiceActions(actions);
-    let ttsMs = 0;
-    let playbackMs = 0;
-    if (ttsText) {
-      const playOptions = spokenForUi ? { displayText: spokenForUi } : {};
-      ({ ttsMs, playbackMs } = await this.playSpokenLine(ttsText, playOptions));
-    } else if (actions.length) {
-      await delay(900);
-    }
     const totalMs = Date.now() - turnStarted;
     publishActivity({
       level: 'info',
       title: 'Turn timing',
-      detail: `STT ${sttMs}ms · LLM ${llmMs}ms · TTS ${ttsMs}ms · total ${totalMs}ms`,
-      meta: { sttMs, llmMs, ttsMs, playbackMs, totalMs }
+      detail: `STT ${sttMs}ms · LLM ${llmMs}ms · total ${totalMs}ms`,
+      meta: { sttMs, llmMs, totalMs }
     });
 
     this.awaitingCommandUntil = 0;
-    this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+    this.noteSpeechActivity();
   }
 
   private historyForSpeaker(speaker: VoiceSpeakerContext | null) {
@@ -567,26 +956,28 @@ export class LocalVoiceSessionManager {
   }
 
   private async playSpokenLine(text: string, options: { publish?: boolean; displayText?: string } = {}) {
-    const cleaned = stripRoleplayMarkupForSpeech(text.trim());
-    if (!cleaned || this.closed) return { ttsMs: 0, playbackMs: 0 };
+    const ttsInput = text.trim();
+    if (!ttsInput || this.closed) return { ttsMs: 0, playbackMs: 0 };
     const displayText = options.displayText
-      ?? (this.fishTts ? stripFishAudioTagsForDisplay(cleaned) : cleaned);
+      ?? (this.fishTts ? stripFishAudioTagsForDisplay(stripRoleplayMarkupForSpeech(ttsInput)) : stripRoleplayMarkupForSpeech(ttsInput));
     if (options.publish) {
-      publishActivity({ level: 'assistant', title: 'Luna said', detail: displayText || cleaned });
+      publishActivity({ level: 'assistant', title: 'Luna said', detail: displayText || ttsInput });
     }
-    this.lastAssistantText = displayText || cleaned;
+    this.lastAssistantText = displayText || ttsInput;
     this.emit?.({ type: 'avatar.state', payload: { state: 'speaking' } });
     const outWav = join(this.tempDir, `tts-${Date.now()}.wav`);
     const ttsStarted = Date.now();
+    const speechText = this.fishTts ? ttsInput : stripRoleplayMarkupForSpeech(ttsInput);
     if (this.fishTts) {
-      await this.fishTts.synthesizeToWav(cleaned, outWav);
+      await this.fishTts.synthesizeToWav(speechText, outWav);
     } else {
-      await this.voice.synthesize(cleaned, outWav);
+      await this.voice.synthesize(speechText, outWav);
     }
     const ttsMs = Date.now() - ttsStarted;
     const discordPcm = await wavToDiscordPcm(this.config.FFMPEG_BINARY, outWav);
     safeUnlink(outWav);
-    publishLunaTtsAvatarSync(discordPcm, displayText || cleaned);
+    publishLunaTtsAvatarSync(discordPcm, displayText || speechText);
+    broadcastLunaTtsAudio(discordPcm);
     emitLunaTtsAudio(discordPcm, this.closed ? null : this.emit);
     const playbackMs = lunaTtsPlaybackMs(discordPcm);
     await delay(playbackMs);

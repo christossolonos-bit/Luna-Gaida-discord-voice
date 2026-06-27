@@ -3,12 +3,13 @@ import { install } from '@pixi/unsafe-eval';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { Live2DModel } from 'pixi-live2d-display/cubism4';
 import type { CompanionState } from './realtime';
+import { createLive2dFaceController, LIP_SYNC_PARAM } from './live2dFaceExpressions';
 
 install(PIXI);
 // pixi-live2d-display expects a global PIXI on window
 (window as unknown as { PIXI: typeof PIXI }).PIXI = PIXI;
 
-const MOUTH_OPEN_PARAMS = ['ParamMouthOpenY', 'ParamMouthForm'];
+const MOUTH_OPEN_PARAM = LIP_SYNC_PARAM;
 
 const motionCandidates: Record<CompanionState, string[]> = {
   idle: ['idle', 'Idle', 'waiting'],
@@ -57,6 +58,7 @@ export class Live2DAvatarRuntime {
   private model: Live2DModel | null = null;
   private speakingTimer: ReturnType<typeof setInterval> | null = null;
   private currentState: CompanionState = 'idle';
+  private readonly face = createLive2dFaceController(() => this.model);
 
   constructor(private readonly mount: HTMLElement) {}
 
@@ -109,17 +111,14 @@ export class Live2DAvatarRuntime {
     }
   }
 
-  setExpression(expression: string) {
-    if (!this.model || !expression) return;
-    try {
-      this.model.expression(expression);
-    } catch {
-      // Model may not ship this expression preset — ignore.
-    }
+  setExpression(expression: string, intensity = 1) {
+    if (!expression) return;
+    this.face.setExpression(expression, intensity);
   }
 
   dispose() {
     this.stopSpeakingAnimation();
+    this.face.dispose();
     if (this.model) {
       this.model.destroy();
       this.model = null;
@@ -181,7 +180,7 @@ export class Live2DAvatarRuntime {
     this.speakingTimer = setInterval(() => {
       t += 0.25;
       const open = (Math.sin(t * 8) + 1) * 0.35;
-      this.setModelParameter(MOUTH_OPEN_PARAMS, open);
+      this.setModelParameter([MOUTH_OPEN_PARAM], open);
     }, 50);
   }
 
@@ -190,7 +189,7 @@ export class Live2DAvatarRuntime {
       clearInterval(this.speakingTimer);
       this.speakingTimer = null;
     }
-    this.setModelParameter(MOUTH_OPEN_PARAMS, 0);
+    this.setModelParameter([MOUTH_OPEN_PARAM], 0);
   }
 }
 

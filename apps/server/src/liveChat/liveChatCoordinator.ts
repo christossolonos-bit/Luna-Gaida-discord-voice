@@ -16,7 +16,7 @@ interface IncomingChatMessage {
 }
 
 export interface LiveChatCoordinatorOptions {
-  speakTts?: (text: string) => Promise<boolean>;
+  speakTts?: (text: string, options?: { displayText?: string }) => Promise<boolean>;
 }
 
 export class LiveChatCoordinator {
@@ -28,7 +28,7 @@ export class LiveChatCoordinator {
   private lastReplyAt = 0;
   private started = false;
   private youtubeRestartTimer: ReturnType<typeof setTimeout> | null = null;
-  private warnedYoutubeTts = false;
+  private warnedLiveTts = false;
 
   constructor(
     private readonly config: AppConfig,
@@ -116,12 +116,26 @@ export class LiveChatCoordinator {
     const autoReply = message.platform === 'twitch'
       ? this.config.twitchAutoReply
       : this.config.youtubeAutoReply;
-    if (!autoReply) return;
+    if (!autoReply) {
+      logger.debug('Live chat message ignored (auto-reply off)', {
+        platform: message.platform,
+        author: message.author
+      });
+      return;
+    }
 
     const trigger = message.platform === 'twitch'
       ? this.config.twitchAutoTrigger
       : this.config.youtubeAutoTrigger;
-    if (!this.shouldReply(trigger, message.text, message.author)) return;
+    const skipReason = this.replySkipReason(message.platform, trigger, message.text, message.author);
+    if (skipReason) {
+      logger.debug('Live chat message ignored', {
+        platform: message.platform,
+        author: message.author,
+        reason: skipReason
+      });
+      return;
+    }
 
     const key = `${message.platform}:${message.id}`;
     if (this.inFlight.has(key)) return;
@@ -135,31 +149,46 @@ export class LiveChatCoordinator {
       }
 
       const reply = await this.brain.generateReply(message.platform, message.author, message.text);
-      if (!reply) return;
+      if (!reply) {
+        logger.warn('Live chat brain returned no reply', {
+          platform: message.platform,
+          author: message.author,
+          text: message.text.slice(0, 120)
+        });
+        return;
+      }
 
-      if (message.platform === 'twitch') {
-        await this.twitch.reply(reply);
-      } else {
-        const spoke = await this.options.speakTts?.(reply) ?? false;
-        if (!spoke) {
-          if (!this.warnedYoutubeTts) {
-            this.warnedYoutubeTts = true;
-            logger.warn('YouTube chat TTS skipped — join Luna to a Discord voice channel first');
-            publishActivity({
-              level: 'warn',
-              title: 'YouTube TTS needs Discord voice',
-              detail: 'Join Luna to a voice channel so she can speak YouTube chat replies on stream. The reply text is still shown here.'
-            });
-          }
+      const wantsTts = message.platform === 'youtube'
+        ? this.config.youtubeTts
+        : this.config.twitchTts;
+      if (wantsTts) {
+        const spoke = await this.options.speakTts?.(reply.ttsText, { displayText: reply.displayText }) ?? false;
+        if (!spoke && !this.warnedLiveTts) {
+          this.warnedLiveTts = true;
+          logger.warn('Live chat TTS skipped', { platform: message.platform });
+          publishActivity({
+            level: 'warn',
+            title: `${message.platform} TTS unavailable`,
+            detail: 'Reply was generated but could not be spoken. Open Fluffy (Electron) or join Luna to a Discord voice channel.'
+          });
         }
+      }
+
+      if (message.platform === 'twitch' && this.config.twitchChatReply) {
+        await this.twitch.reply(reply.displayText);
       }
 
       this.lastReplyAt = Date.now();
       publishActivity({
         level: 'assistant',
-        title: message.platform === 'youtube' ? 'Luna spoke (YouTube TTS)' : `Luna → ${message.platform}`,
-        detail: reply,
-        meta: { platform: message.platform, to: message.author, mode: message.platform === 'youtube' ? 'tts' : 'chat' }
+        title: message.platform === 'youtube' ? 'Luna spoke (YouTube TTS)' : 'Luna spoke (Twitch TTS)',
+        detail: reply.displayText,
+        meta: {
+          platform: message.platform,
+          to: message.author,
+          mode: wantsTts ? 'tts' : 'chat',
+          ...(this.config.twitchChatReply && message.platform === 'twitch' ? { twitchChat: true } : {})
+        }
       });
     } catch (error) {
       logger.warn('Live chat reply failed', {
@@ -171,30 +200,26 @@ export class LiveChatCoordinator {
     }
   }
 
-  private shouldReply(trigger: string, text: string, author: string) {
-    const botNames = [
-      this.config.twitchUsername,
-      this.config.lunaCreatorName,
-      'luna',
-      'solosluna'
-    ].filter(Boolean) as string[];
-
-    const authorKey = author.toLowerCase().replace(/^@/, '');
-    if (botNames.some((name) => authorKey === name.toLowerCase().replace(/^@/, ''))) {
-      return false;
+  private replySkipReason(platform: Platform, trigger: string, text: string, author: string) {
+    if (platform === 'twitch') {
+      const botUsername = this.config.twitchUsername?.toLowerCase().replace(/^@/, '');
+      const authorKey = author.toLowerCase().replace(/^@/, '');
+      if (botUsername && authorKey === botUsername) {
+        return 'ignored_bot_account';
+      }
     }
 
     const normalized = text.trim();
-    if (!normalized) return false;
+    if (!normalized) return 'empty_message';
 
-    if (trigger === 'all') return true;
+    if (trigger === 'all') return null;
     if (trigger === 'mention') {
-      return /\bluna\b/i.test(normalized) || /@luna\b/i.test(normalized);
+      return (/\bluna\b/i.test(normalized) || /@luna\b/i.test(normalized)) ? null : 'trigger_mention';
     }
     if (trigger === 'question') {
-      return normalized.includes('?');
+      return normalized.includes('?') ? null : 'trigger_question';
     }
-    return /\bluna\b/i.test(normalized);
+    return /\bluna\b/i.test(normalized) ? null : 'trigger_luna';
   }
 }
 

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { LiveSurface } from '../live/liveSession.js';
 import type { LiveClientEvent, LiveInputEvent } from '../live/liveSession.js';
 import { logger } from '../logging/logger.js';
+import { isLunaElectronAudioMuted } from '../live/lunaTtsOutput.js';
 import { setAvatarBroadcaster } from './avatarBroadcast.js';
 
 const realtimeSurfaceSchema = z.enum(['app', 'browser']).optional();
@@ -11,7 +12,7 @@ const clientEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('connect'),
     surface: realtimeSurfaceSchema,
-    role: z.enum(['avatar', 'live']).optional()
+    role: z.enum(['avatar', 'monitor', 'live']).optional()
   }),
   z.object({ type: z.literal('disconnect') }),
   z.object({ type: z.literal('text'), text: z.string().max(8000), requestId: z.string().uuid().optional() }),
@@ -79,7 +80,7 @@ export function attachRealtimeServer(
   };
 
   const broadcastAvatarToApp = (event: Extract<LiveClientEvent, {
-    type: 'avatar.state' | 'avatar.expression' | 'avatar.model.change' | 'avatar.lipsync' | 'audio' | 'transcript';
+    type: 'avatar.state' | 'avatar.expression' | 'avatar.local_audio' | 'avatar.model.change' | 'avatar.lipsync' | 'audio' | 'transcript';
   }>) => {
     for (const [socket, socketContext] of sockets) {
       if (socketContext !== 'app') continue;
@@ -157,11 +158,15 @@ export function attachRealtimeServer(
             closeContextIfIdle(previousContext);
           }
 
-          const avatarOnly = parsed.role === 'avatar';
+          const avatarOnly = parsed.role === 'avatar' || parsed.role === 'monitor';
           if (avatarOnly) {
             avatarOnlySockets.add(socket);
-            socket.send(JSON.stringify({ type: 'status', status: 'connected', reason: 'avatar_sync' }));
+            const syncReason = parsed.role === 'monitor' ? 'monitor_sync' : 'avatar_sync';
+            socket.send(JSON.stringify({ type: 'status', status: 'connected', reason: syncReason }));
             socket.send(JSON.stringify({ type: 'avatar.state', payload: { state: 'idle' } }));
+            if (isLunaElectronAudioMuted()) {
+              socket.send(JSON.stringify({ type: 'avatar.local_audio', payload: { muted: true } }));
+            }
             return;
           }
 

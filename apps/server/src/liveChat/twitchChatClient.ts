@@ -45,6 +45,10 @@ export class TwitchChatClient {
       if (self) return;
       const text = message.trim();
       if (!text) return;
+      logger.debug('Twitch chat message received', {
+        author: tags['display-name'] ?? tags.username,
+        channel: _channelName
+      });
       this.listener?.({
         platform: 'twitch',
         id: tags.id ?? `${tags['user-id'] ?? 'unknown'}:${Date.now()}`,
