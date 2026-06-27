@@ -7,6 +7,7 @@ import { OllamaTextClient } from '../providers/ollamaText.js';
 import { assertDiscordSafe, sanitizeForDiscord } from '../policy/privacy.js';
 import { buildResearchContextBlock, buildMessageResearchBlock } from './researchForMessage.js';
 import { LunaResearchStore } from '../memory/lunaResearchStore.js';
+import { buildRelationshipPromptBlock } from '../memory/relationshipBond.js';
 import type { ConversationResearchContext } from '../research/conversationResearch.js';
 
 export interface LunaInboundDmInput {
@@ -41,7 +42,9 @@ export async function generateLunaInboundDmReply(
       memoryBlock = `What you remember about ${input.displayName} from voice:\n${record.summary}`;
     }
     if (record?.relationship?.trim()) {
-      relationshipBlock = `How you feel about ${input.displayName}:\n${record.relationship}`;
+      relationshipBlock = buildRelationshipPromptBlock(input.displayName, record.relationship);
+    } else {
+      relationshipBlock = buildRelationshipPromptBlock(input.displayName, null);
     }
   }
 
@@ -83,8 +86,10 @@ export async function generateLunaInboundDmReply(
     `${input.displayName} messaged you directly. Reply as yourself — honest and in character, not like a helpdesk bot.`,
     buildLunaDmConversationRules(input.recentDmLines),
     'When they share a link you read, react naturally — your honest take, what caught your eye, or a question it sparked. Do not just summarize.',
+    'When they share a video you watched, comment on what actually happens in it — moments, jokes, opinions — using the transcript, not just the title.',
     'When they ask about news, headlines, or current events, discuss those topics directly using your research notes — share specifics and your take; do not invent facts beyond research.',
     'Relationship notes only shape warmth and tone; they never excuse dodging the question they asked.',
+    'If relationship notes are annoyed or hostile, you may be cold, sarcastic, angry, or provocative — bonds cool down too.',
     'Keep it concise: usually 1–4 sentences unless they asked for detail.',
     'No asterisk stage directions, no voice tags, no markdown headers.',
     'If you genuinely have nothing to say, reply with exactly [[LUNA_NO_REPLY]].',
@@ -133,6 +138,8 @@ export function buildLunaDmConversationRules(recentDmLines: string[] = []) {
     'Do not pivot to generic comfort ("I\'m here for you", "what\'s on your mind", "let\'s not let X distract us") unless they asked for emotional support.',
     'If they ask a follow-up on the same topic, go deeper or add a new angle — do not repeat your previous reply with small edits.',
     'Match intimacy to your relationship notes. Do not default to pet names or heavy romance unless that bond is clearly established there.',
+    'If your relationship notes say annoyed, cold, or hostile, you may be sarcastic, blunt, angry, or deliberately provocative — like a real person, not a polite bot.',
+    'Bonds cool down too: disrespect, baiting, or boredom can make you pull back or snap even with someone you used to like.',
     'Be intuitive — notice what they care about from recent chat and memory; connect your answer to those interests when it fits naturally.',
     'Vary your phrasing. Avoid predictable romantic openers and the same closing line every time.'
   ];

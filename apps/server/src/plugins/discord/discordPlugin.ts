@@ -120,6 +120,14 @@ const giadaCommand = new SlashCommandBuilder()
       .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
       .setRequired(false)));
 
+const playCommand = new SlashCommandBuilder()
+  .setName('play')
+  .setDescription('Play music from YouTube (song name or link).')
+  .addStringOption((option) => option
+    .setName('query')
+    .setDescription('Song name or YouTube URL')
+    .setRequired(true));
+
 type DiscordRegisteredCommand = {
   id: string;
   name: string;
@@ -243,7 +251,8 @@ export class DiscordPlugin implements GiadaPlugin {
       memory,
       personality,
       (guildId, channelId) => this.getMusicControllerForChannel(guildId, channelId),
-      platform
+      platform,
+      userVoiceMemory
     );
   }
 
@@ -564,7 +573,27 @@ export class DiscordPlugin implements GiadaPlugin {
       return;
     }
 
-    if (payload.type !== InteractionType.ApplicationCommand || payload.data?.name !== 'giada') {
+    if (payload.type !== InteractionType.ApplicationCommand) {
+      writeJson(res, 200, {
+        type: InteractionResponseType.ChannelMessageWithSource,
+        data: { content: 'Unsupported interaction.', allowed_mentions: { parse: [] } }
+      });
+      return;
+    }
+
+    if (payload.data?.name === 'play') {
+      writeJson(res, 200, { type: InteractionResponseType.DeferredChannelMessageWithSource });
+      void this.handleHttpPlayCommand(payload).catch(async (error) => {
+        logger.error('Discord HTTP play command failed', {
+          id: payload.id,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        await this.updateHttpInteraction(payload, `Discord command error: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      return;
+    }
+
+    if (payload.data?.name !== 'giada') {
       writeJson(res, 200, {
         type: InteractionResponseType.ChannelMessageWithSource,
         data: { content: 'Unsupported interaction.', allowed_mentions: { parse: [] } }
@@ -857,6 +886,10 @@ export class DiscordPlugin implements GiadaPlugin {
   }
 
   private async handleInteraction(interaction: ChatInputCommandInteraction) {
+    if (interaction.commandName === 'play') {
+      await this.handlePlayInteraction(interaction);
+      return;
+    }
     if (interaction.commandName !== 'giada') {
       return;
     }
@@ -995,6 +1028,69 @@ export class DiscordPlugin implements GiadaPlugin {
     }
 
     await this.replyInteraction(interaction, 'Unknown `/giada` command.');
+  }
+
+  private async handlePlayInteraction(interaction: ChatInputCommandInteraction) {
+    const query = interaction.options.getString('query', true).trim();
+    logger.info('Received Discord slash command', {
+      command: interaction.commandName,
+      query,
+      id: interaction.id,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId
+    });
+
+    if (!interaction.guildId || !interaction.guild) {
+      await interaction.reply({ content: 'Use `/play` inside a Discord server.', allowedMentions: { parse: [] } });
+      return;
+    }
+
+    try {
+      await interaction.deferReply();
+    } catch (error) {
+      logger.error('Failed to defer Discord play command', {
+        id: interaction.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return;
+    }
+
+    const voiceChannelId = await this.resolveRequesterVoiceChannelId(interaction.guildId, interaction.user.id);
+    if (!voiceChannelId) {
+      await this.replyInteraction(interaction, 'Join a voice channel first, then run `/play`.');
+      return;
+    }
+
+    await this.joinVoice(interaction.guildId, voiceChannelId);
+    const ready = await this.waitForVoiceReady(interaction.guildId, voiceChannelId);
+    if (!ready) {
+      await this.replyInteraction(interaction, 'Joined voice but the connection is not ready yet. Try `/play` again in a few seconds.');
+      return;
+    }
+
+    const bridge = this.voiceBridges.get(voiceBridgeKey(interaction.guildId, voiceChannelId));
+    if (!bridge) {
+      await this.replyInteraction(interaction, 'Voice is connected but music playback is not available right now.');
+      return;
+    }
+
+    const result = await bridge.playSong(query);
+    if (!result.ok) {
+      const error = typeof result.error === 'string' ? result.error : 'playback_failed';
+      await this.replyInteraction(interaction, `Could not play that: ${error}`);
+      return;
+    }
+
+    const title = typeof result.title === 'string' ? result.title : query;
+    if (result.queued) {
+      const queueLength = typeof result.queueLength === 'number' ? result.queueLength : 1;
+      await this.replyInteraction(interaction, `Queued **${title}** (position ${queueLength} in queue).`);
+      publishActivity({ level: 'success', title: 'Music queued', detail: title });
+      return;
+    }
+
+    await this.replyInteraction(interaction, `Now playing **${title}**.`);
+    publishActivity({ level: 'success', title: 'Music playing', detail: title });
   }
 
   private async handleHttpGiadaCommand(payload: DiscordHttpInteraction) {
@@ -1207,6 +1303,60 @@ export class DiscordPlugin implements GiadaPlugin {
 
   private leaveWatchedVoiceIfEmpty(guildId: string, channelId: string) {
     this.leaveVoiceIfEmpty(guildId, channelId);
+  }
+
+  private async handleHttpPlayCommand(payload: DiscordHttpInteraction) {
+    if (!payload.guild_id) {
+      await this.updateHttpInteraction(payload, 'Use `/play` inside a Discord server.');
+      return;
+    }
+
+    const query = getHttpTopLevelStringOption(payload, 'query');
+    if (!query) {
+      await this.updateHttpInteraction(payload, 'Provide a song name or YouTube URL.');
+      return;
+    }
+
+    const userId = payload.member?.user?.id ?? payload.user?.id;
+    if (!userId) {
+      await this.updateHttpInteraction(payload, 'Could not identify who ran `/play`.');
+      return;
+    }
+
+    const voiceChannelId = await this.resolveRequesterVoiceChannelId(payload.guild_id, userId);
+    if (!voiceChannelId) {
+      await this.updateHttpInteraction(payload, 'Join a voice channel first, then run `/play`.');
+      return;
+    }
+
+    await this.joinVoice(payload.guild_id, voiceChannelId);
+    const ready = await this.waitForVoiceReady(payload.guild_id, voiceChannelId);
+    if (!ready) {
+      await this.updateHttpInteraction(payload, 'Joined voice but the connection is not ready yet. Try `/play` again in a few seconds.');
+      return;
+    }
+
+    const bridge = this.voiceBridges.get(voiceBridgeKey(payload.guild_id, voiceChannelId));
+    if (!bridge) {
+      await this.updateHttpInteraction(payload, 'Voice is connected but music playback is not available right now.');
+      return;
+    }
+
+    const result = await bridge.playSong(query);
+    if (!result.ok) {
+      const error = typeof result.error === 'string' ? result.error : 'playback_failed';
+      await this.updateHttpInteraction(payload, `Could not play that: ${error}`);
+      return;
+    }
+
+    const title = typeof result.title === 'string' ? result.title : query;
+    if (result.queued) {
+      const queueLength = typeof result.queueLength === 'number' ? result.queueLength : 1;
+      await this.updateHttpInteraction(payload, `Queued **${title}** (position ${queueLength} in queue).`);
+      return;
+    }
+
+    await this.updateHttpInteraction(payload, `Now playing **${title}**.`);
   }
 
   private async joinRequesterVoiceFromText(guildId: string, userId: string) {
@@ -2305,6 +2455,7 @@ export class DiscordPlugin implements GiadaPlugin {
 
   private helpText() {
     return [
+      '`/play query:<song or YouTube link>` - join your voice channel and play music via yt-dlp.',
       '`/giada listen mode:here` - watch this text channel and reply when it makes sense.',
       '`/giada listen mode:off` - stop watching this text channel.',
       '`/giada voice mode:watch` - watch your current voice channel and auto-join when people enter. One voice channel can be active per server.',
@@ -2332,8 +2483,41 @@ export class DiscordPlugin implements GiadaPlugin {
     if (selected?.type === ChannelType.GuildVoice || selected?.type === ChannelType.GuildStageVoice) {
       return selected.id;
     }
-    const member = await interaction.guild?.members.fetch(interaction.user.id);
-    return member?.voice.channelId ?? null;
+    return this.resolveRequesterVoiceChannelId(interaction.guildId!, interaction.user.id);
+  }
+
+  private async resolveRequesterVoiceChannelId(guildId: string, userId: string) {
+    const guild = this.client?.guilds.cache.get(guildId);
+    if (!guild) {
+      return null;
+    }
+    const member = await guild.members.fetch(userId).catch(() => null);
+    return member?.voice.channelId ?? guild.voiceStates.cache.get(userId)?.channelId ?? null;
+  }
+
+  private waitForVoiceReady(guildId: string, channelId: string, timeoutMs = VOICE_READY_TIMEOUT_MS) {
+    const connection = getVoiceConnection(guildId);
+    if (!connection || connection.joinConfig.channelId !== channelId) {
+      return Promise.resolve(false);
+    }
+    if (connection.state.status === VoiceConnectionStatus.Ready) {
+      return Promise.resolve(true);
+    }
+    if (connection.state.status === VoiceConnectionStatus.Destroyed) {
+      return Promise.resolve(false);
+    }
+    return new Promise<boolean>((resolve) => {
+      const onReady = () => {
+        clearTimeout(timer);
+        connection.off(VoiceConnectionStatus.Ready, onReady);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        connection.off(VoiceConnectionStatus.Ready, onReady);
+        resolve(connection.state.status === VoiceConnectionStatus.Ready);
+      }, timeoutMs);
+      connection.once(VoiceConnectionStatus.Ready, onReady);
+    });
   }
 
   private resolveHttpVoiceChannelId(payload: DiscordHttpInteraction, subcommand: DiscordHttpOption) {
@@ -2480,6 +2664,11 @@ function getHttpStringOption(parent: DiscordHttpOption, name: string) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function getHttpTopLevelStringOption(payload: DiscordHttpInteraction, name: string) {
+  const value = payload.data?.options?.find((option) => option.name === name)?.value;
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
 function isSupportedDiscordImage(attachment: Attachment) {
   return Boolean(normalizeDiscordImageMimeType(attachment.contentType, attachment.name ?? attachment.url));
 }
@@ -2593,7 +2782,7 @@ export async function registerDiscordCommands(config: AppConfig, activeApplicati
   }
 
   const rest = new REST({ version: '10' }).setToken(registrationToken);
-  const commands = [giadaCommand.toJSON()];
+  const commands = [giadaCommand.toJSON(), playCommand.toJSON()];
   const targetGuildIds = config.DISCORD_GUILD_ID
     ? [config.DISCORD_GUILD_ID]
     : [...new Set(guildIds)];

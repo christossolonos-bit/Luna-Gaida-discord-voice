@@ -1,6 +1,7 @@
 import type { AppConfig } from '../config/env.js';
 import type { LunaResearchStore } from '../memory/lunaResearchStore.js';
 import { formatResearchFindingBlock, runLunaResearch } from './lunaResearchRunner.js';
+import { isVideoUrl, watchSharedVideo, formatWatchedVideoBlock } from './watchVideo.js';
 import { logger } from '../logging/logger.js';
 
 export interface LinkSenderIdentity {
@@ -54,6 +55,20 @@ export async function readTrustedUserLinks(
 
   for (const url of urls) {
     try {
+      if (isVideoUrl(url)) {
+        const watched = await watchSharedVideo(config, url);
+        researchStore?.record({
+          source: 'trusted_video',
+          mode: 'read',
+          query: watched.method,
+          url: watched.url,
+          title: watched.title,
+          summary: watched.transcript.slice(0, 4000)
+        });
+        blocks.push(formatWatchedVideoBlock(watched, who));
+        continue;
+      }
+
       const finding = await runLunaResearch(config, { mode: 'read', url });
       if (!finding) continue;
 

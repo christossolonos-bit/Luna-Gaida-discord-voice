@@ -41,4 +41,8 @@ describe('fishAudioExpressions', () => {
   it('derives cold mood from distant relationships', () => {
     expect(relationshipToFishMood('tolerates him but stays distant')).toContain('[cold tone]');
   });
+
+  it('derives angry mood from hostile relationships', () => {
+    expect(relationshipToFishMood('fed up and ragebaiting them')).toContain('[angry]');
+  });
 });

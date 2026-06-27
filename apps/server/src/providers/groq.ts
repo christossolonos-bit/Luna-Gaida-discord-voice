@@ -42,7 +42,7 @@ export class GroqTextClient {
       try {
         result = await this.requestWithRotation(messages, input.tools ?? [], explicitKey, input.maxCompletionTokens, input.temperature);
       } catch (error) {
-        if (!isGroqFunctionCallGenerationError(error) || !(input.tools?.length)) throw error;
+        if (!(input.tools?.length) || !shouldRetryWithoutTools(error)) throw error;
         result = await this.requestWithRotation(messages, [], explicitKey, input.maxCompletionTokens, input.temperature);
       }
       explicitKey = result.explicitKey;
@@ -148,6 +148,13 @@ function isGroqFunctionCallGenerationError(error: unknown) {
   return error instanceof GroqRequestError
     && error.status === 400
     && (error.code === 'tool_use_failed' || /failed to call a function/i.test(error.message));
+}
+
+function shouldRetryWithoutTools(error: unknown) {
+  if (isGroqFunctionCallGenerationError(error)) return true;
+  return error instanceof GroqRequestError
+    && error.status >= 400
+    && /expected element type <function>|tool|parameter/i.test(error.message);
 }
 
 import { stripModelArtifacts } from '../live/voiceReply.js';

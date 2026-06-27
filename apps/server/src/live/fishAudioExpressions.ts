@@ -1,5 +1,7 @@
 /** Fish Audio S2 bracket cues — passed to the LLM; tags steer delivery, not spoken aloud. */
 
+import { inferBondTier } from '../memory/relationshipBond.js';
+
 export const FISH_AUDIO_EXPRESSION_PROMPT = [
   'Fish Audio S2 voice direction — your reply is synthesized with rich emotional control. Use [square bracket] tags liberally.',
   'Tags are NOT read aloud. They control pitch, pace, tone, breath, and emotion at that moment in the line.',
@@ -105,24 +107,14 @@ export function mapActionToFishTag(action: string): string | null {
 }
 
 export function relationshipToFishMood(relationship: string | null | undefined): string[] {
-  if (!relationship?.trim()) return ['[curious]'];
-  const text = relationship.toLowerCase();
-  if (/\b(dislike|annoy|irritat|cold|hostile|distant|guard|tolerat)\b/.test(text)) {
-    return ['[indifferent]', '[cold tone]'];
-  }
-  if (/\b(flirt\w*|adore|love|warm|fond|charm|trust|close)\b/.test(text)) {
-    return ['[flirty]', '[warm tone]'];
-  }
-  if (/\b(sad|hurt|disappoint)\b/.test(text)) {
-    return ['[sad]', '[soft tone]'];
-  }
-  if (/\b(excited|happy|playful)\b/.test(text)) {
-    return ['[happy]', '[playful tone]'];
-  }
-  if (/\b(sarcastic|witty|teas)\b/.test(text)) {
-    return ['[sarcastic]', '[teasing tone]'];
-  }
-  return ['[relaxed]'];
+  const tier = inferBondTier(relationship);
+  if (tier === 'hostile') return ['[angry]', '[sarcastic]', '[cold tone]'];
+  if (tier === 'annoyed') return ['[frustrated]', '[sarcastic]', '[dry and unimpressed]'];
+  if (tier === 'cool') return ['[indifferent]', '[cold tone]'];
+  if (tier === 'stranger' || tier === 'acquaintance') return ['[calm]', '[curious]'];
+  if (tier === 'warming') return ['[warm tone]', '[playful tone]'];
+  if (tier === 'bonded' || tier === 'romantic') return ['[flirty]', '[warm tone]'];
+  return ['[calm]', '[curious]'];
 }
 
 function inferTagsForSentence(sentence: string, moodTags: string[]): string[] {

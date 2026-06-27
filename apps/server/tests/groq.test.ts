@@ -70,6 +70,38 @@ describe('Groq text generation', () => {
     expect(secondBody.tools).toBeUndefined();
   });
 
+  it('retries without tools when Ollama rejects the tool schema', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { message: 'expected element type <function> but have <parameter>' }
+      }), { status: 500 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: 'Text-only reply.' } }]
+      }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new GroqTextClient({
+      GROQ_API_URL: 'https://api.groq.com/openai/v1/chat/completions',
+      GROQ_MODEL: 'llama-3.3-70b-versatile',
+      GROQ_TIMEOUT_MS: 30_000,
+      ollamaApiUrl: 'http://127.0.0.1:11434/v1/chat/completions',
+      ollamaModel: 'qwen3.5:4b',
+      ollamaTimeoutMs: 30_000,
+      ollamaReasoningEffort: 'none'
+    } as AppConfig);
+
+    await expect(client.generate({
+      apiKey: 'ollama',
+      system: 'System prompt',
+      userText: 'User prompt',
+      tools: [{ name: 'sendDiscordGif', description: 'Send a GIF', parameters: { type: 'OBJECT' } }]
+    })).resolves.toBe('Text-only reply.');
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(secondBody.tools).toBeUndefined();
+  });
+
   it('uses another available shared key after a rate limit', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({

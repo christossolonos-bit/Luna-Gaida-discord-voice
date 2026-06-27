@@ -92,7 +92,7 @@ const envSchema = z.object({
   LUNA_LIFE_MEMORY: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
   LUNA_COMMAND_WINDOW_SEC: z.coerce.number().int().positive().default(8),
   LUNA_WAKE_MODE: z.enum(['split', 'combined']).default('split'),
-  LUNA_LISTENING_ACK: z.string().default("Yes, darling? I'm listening."),
+  LUNA_LISTENING_ACK: z.string().default("Yes? I'm listening."),
   LUNA_ECHO_MUTE_MS: z.coerce.number().int().nonnegative().default(3500),
   LUNA_AUTONOMOUS_REACH_OUT: z.enum(['true', 'false', '1', '0']).optional(),
   LUNA_INITIATIVE_MIN_SEC: z.coerce.number().int().min(15).default(60),
@@ -117,6 +117,8 @@ const envSchema = z.object({
   LUNA_RESEARCH_MAX_PER_DAY: z.coerce.number().int().min(1).default(20),
   LUNA_RESEARCH_MAX_READ_CHARS: z.coerce.number().int().min(1000).default(6000),
   LUNA_LINK_TRUSTED_SENDERS: z.string().default('solonaras,travis'),
+  LUNA_VIDEO_MAX_TRANSCRIBE_SEC: z.coerce.number().int().min(60).max(3600).default(600),
+  LUNA_VIDEO_MAX_TRANSCRIPT_CHARS: z.coerce.number().int().min(1000).max(50000).default(10000),
   WHISPER_INITIAL_PROMPT: z.string().default(''),
   WHISPER_NO_SPEECH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.35),
   LUNA_TTS_PROVIDER: z.enum(['xtts', 'fish']).default('xtts'),
@@ -235,6 +237,8 @@ export function loadConfig() {
       .split(',')
       .map((name) => name.trim())
       .filter(Boolean),
+    lunaVideoMaxTranscribeSec: parsed.LUNA_VIDEO_MAX_TRANSCRIBE_SEC,
+    lunaVideoMaxTranscriptChars: parsed.LUNA_VIDEO_MAX_TRANSCRIPT_CHARS,
     youtubeClientId: parsed.YOUTUBE_CLIENT_ID ?? envString('YOUTUBE_CLIENT_ID', 'youtube_client_id'),
     youtubeClientSecret: parsed.YOUTUBE_CLIENT_SECRET ?? envString('YOUTUBE_CLIENT_SECRET', 'youtube_client_secret'),
     youtubeRefreshToken: parsed.YOUTUBE_REFRESH_TOKEN ?? envString('YOUTUBE_REFRESH_TOKEN', 'youtube_refresh_token'),

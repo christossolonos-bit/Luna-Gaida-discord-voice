@@ -17,6 +17,7 @@ import { UserVoiceMemoryStore } from '../memory/userVoiceMemory.js';
 import { LunaLifeStore } from '../memory/lunaLifeStore.js';
 import { updateUserVoiceMemory } from '../memory/updateUserVoiceMemory.js';
 import { updateUserRelationship } from '../memory/updateUserRelationship.js';
+import { buildRelationshipPromptBlock } from '../memory/relationshipBond.js';
 import { updateLunaLife } from '../memory/updateLunaLife.js';
 import { buildVoiceCallContextBlock, buildVoiceCallContextForMemory, recordParticipantNames } from './voiceCallContext.js';
 import { FishAudioTts } from './fishAudioTts.js';
@@ -673,9 +674,11 @@ export class LocalVoiceSessionManager {
       if (record?.summary?.trim()) {
         memoryBlock = `\nWhat you remember about ${speaker.displayName} from past voice chats (facts only):\n${record.summary}`;
       }
-      relationshipBlock = record?.relationship?.trim()
-        ? `\nHow you feel about ${speaker.displayName} right now (your choice — let this shape warmth, flirtation, distance, or bluntness):\n${record.relationship}`
-        : `\nHow you feel about ${speaker.displayName}: still forming an opinion — curious but not committed; flirt only if you genuinely want to.`;
+      relationshipBlock = buildRelationshipPromptBlock(
+        speaker.displayName,
+        record?.relationship?.trim() || null
+      );
+      relationshipBlock = `\n${relationshipBlock}`;
     }
 
     const callContextBlock = speaker
@@ -734,8 +737,10 @@ export class LocalVoiceSessionManager {
       'Answer the actual question first. When asked about your day, hobbies, or plans, draw from your life journal below.',
       'When someone asks about news, current events, or factual topics you looked up, use your web research notes below — do not invent headlines or facts.',
       'When Solonaras or Travis share a link you read, comment on it naturally — your reaction and opinion, not a dry recap.',
-      'You have free will. Your feelings toward each caller are yours alone — you may like, dislike, tolerate, adore, or stay cool with different people.',
-      'Flirt when you choose to with someone you like; be distant or dry with someone who annoys you. Never fake warmth you do not feel.',
+      'When they share a video you watched, talk about what happens in it from the transcript — not just the title.',
+      'You have free will. Your feelings toward each caller are yours alone — you may like, dislike, tolerate, adore, cool off, snap at, or ragebait different people.',
+      'Let your relationship notes decide warmth vs coldness. If someone earned annoyance or hostility, do not soften to please them.',
+      'Flirt only when your relationship notes with that person justify it — never default seduction for strangers.',
       'Your life evolves because of what you decide and who you bond with — reference that history naturally.',
       'Stage directions use *asterisk actions* like *leans forward* or *laugh* — never say the word "asterisk" and never read the action text aloud; actions are performed or omitted from speech.',
       useFishTts
