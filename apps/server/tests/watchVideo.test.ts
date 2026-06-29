@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { captionTextToPlain, isVideoUrl, json3ToText, srtToText, vttToText } from '../src/research/watchVideo.js';
+import { captionTextToPlain, extractYoutubeVideoId, isVideoUrl, json3ToText, pickFrameTimestamps, srtToText, vttToText } from '../src/research/watchVideo.js';
 
 describe('watchVideo', () => {
   it('detects common video hosts', () => {
@@ -32,14 +32,15 @@ Today we talk about AI`;
     expect(captionTextToPlain(json3)).toBe('Hello everyone Today we talk about AI');
   });
 
-  it('converts srt captions to plain text', () => {
-    const srt = `1
-00:00:01,000 --> 00:00:03,000
-Hello everyone
+  it('picks spread-out frame timestamps', () => {
+    const stamps = pickFrameTimestamps(100, 3);
+    expect(stamps).toHaveLength(3);
+    expect(stamps[0]).toBeGreaterThanOrEqual(0.5);
+    expect(stamps[2]).toBeLessThan(100);
+  });
 
-2
-00:00:03,500 --> 00:00:06,000
-Today we talk about AI`;
-    expect(srtToText(srt)).toBe('Hello everyone Today we talk about AI');
+  it('extracts youtube video ids', () => {
+    expect(extractYoutubeVideoId('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ');
+    expect(extractYoutubeVideoId('https://youtu.be/dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ');
   });
 });

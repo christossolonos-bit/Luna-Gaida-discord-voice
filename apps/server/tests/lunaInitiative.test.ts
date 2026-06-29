@@ -49,4 +49,15 @@ describe('lunaInitiative', () => {
     expect(summary).toMatch(/Noticeable quiet/);
     expect(summary).toMatch(/2 people/);
   });
+
+  it('notes when Luna overheard live conversation', () => {
+    const summary = summarizeVibeSignals({
+      silenceSec: 2,
+      recentExchanges: [],
+      overheardConversation: ['Alex: bro did you see that', 'Sam: yeah wild'],
+      participantCount: 3,
+      trigger: 'vibe_check'
+    });
+    expect(summary).toMatch(/just listened to live conversation/i);
+  });
 });

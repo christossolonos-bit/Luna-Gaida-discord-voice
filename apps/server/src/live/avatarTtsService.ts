@@ -7,6 +7,7 @@ import { logger } from '../logging/logger.js';
 import { broadcastAvatarEvent } from '../ws/avatarBroadcast.js';
 import { FishAudioTts } from './fishAudioTts.js';
 import { applyVoiceActionsToReply, stripRoleplayMarkupForSpeech } from './voiceActions.js';
+import { analyzeFishTtsDelivery, buildFishDeliveryContext } from './fishAudioDelivery.js';
 import { LocalVoiceService, resolveLocalVoicePaths } from './localVoiceService.js';
 import {
   broadcastLunaTtsAudio,
@@ -103,7 +104,12 @@ export class AvatarTtsService {
     const ttsStarted = Date.now();
     try {
       if (this.fishTts) {
-        await this.fishTts.synthesizeToWav(ttsText, outWav);
+        const delivery = analyzeFishTtsDelivery(ttsText, buildFishDeliveryContext(this.config));
+        await this.fishTts.synthesizeToWav(ttsText, outWav, {
+          referenceId: delivery.referenceId,
+          prosodySpeed: delivery.prosodySpeed,
+          prosodyVolume: delivery.prosodyVolume
+        });
       } else if (this.voice) {
         await this.voice.synthesize(ttsText, outWav);
       } else {

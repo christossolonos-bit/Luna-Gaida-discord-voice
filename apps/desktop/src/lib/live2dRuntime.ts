@@ -12,11 +12,11 @@ install(PIXI);
 const MOUTH_OPEN_PARAM = LIP_SYNC_PARAM;
 
 const motionCandidates: Record<CompanionState, string[]> = {
-  idle: ['idle', 'Idle', 'waiting'],
-  listening: ['listening', 'Listening', 'idle'],
-  thinking: ['thinking', 'Think', 'idle'],
-  speaking: ['talk', 'Speak', 'idle'],
-  reacting: ['tap', 'TapBody', 'Tap', 'idle']
+  idle: ['Idle', 'idle', 'benghuaiyanzhu', 'waiting'],
+  listening: ['listening', 'Listening', 'Idle', 'idle'],
+  thinking: ['thinking', 'Think', 'Idle', 'idle'],
+  speaking: ['talk', 'Speak', 'Idle', 'idle'],
+  reacting: ['Tears', 'Blood', 'Outfit', 'tap', 'TapBody', 'Tap', 'idle']
 };
 
 export function resolveLive2dModelUrl() {
@@ -114,6 +114,10 @@ export class Live2DAvatarRuntime {
   setExpression(expression: string, intensity = 1) {
     if (!expression) return;
     this.face.setExpression(expression, intensity);
+  }
+
+  setWardrobe(payload: { outfit: 'light' | 'dark'; accessories: string[]; motion?: string | null }) {
+    this.face.setWardrobe(payload);
   }
 
   dispose() {

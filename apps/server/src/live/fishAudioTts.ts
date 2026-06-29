@@ -9,12 +9,27 @@ export interface FishAudioTtsConfig {
   prosodySpeed?: number;
 }
 
+export interface FishTtsSynthesisOptions {
+  referenceId?: string | undefined;
+  prosodySpeed?: number | undefined;
+  prosodyVolume?: number | undefined;
+}
+
 export class FishAudioTts {
   constructor(private readonly config: FishAudioTtsConfig) {
     mkdirSync(config.tempDir, { recursive: true });
   }
 
-  async synthesizeToWav(text: string, outWav: string) {
+  async synthesizeToWav(text: string, outWav: string, options: FishTtsSynthesisOptions = {}) {
+    await this.synthesizeToFile(text, outWav, 'wav', options);
+  }
+
+  async synthesizeToFile(
+    text: string,
+    outPath: string,
+    format: 'wav' | 'mp3' = 'wav',
+    options: FishTtsSynthesisOptions = {}
+  ) {
     if (!this.config.apiKey.trim()) {
       throw new Error('FISH_AUDIO_API_KEY is not configured');
     }
@@ -30,23 +45,33 @@ export class FishAudioTts {
       hasExpressionTags: /\[[^\]]+\]/.test(cleaned)
     });
 
-    await this.request(cleaned, outWav);
+    await this.request(cleaned, outPath, format, options);
   }
 
-  private async request(text: string, outPath: string) {
+  private async request(
+    text: string,
+    outPath: string,
+    format: 'wav' | 'mp3' = 'wav',
+    options: FishTtsSynthesisOptions = {}
+  ) {
+    const speed = options.prosodySpeed ?? this.config.prosodySpeed ?? 1;
+    const volume = options.prosodyVolume ?? 0;
     const body: Record<string, unknown> = {
       text,
-      format: 'wav',
-      sample_rate: 44100,
+      format,
       normalize: true,
       prosody: {
-        speed: this.config.prosodySpeed ?? 1,
-        volume: 0,
+        speed,
+        volume,
         normalize_loudness: true
       }
     };
-    if (this.config.referenceId?.trim()) {
-      body.reference_id = this.config.referenceId.trim();
+    if (format === 'wav') {
+      body.sample_rate = 44100;
+    }
+    const referenceId = options.referenceId?.trim() || this.config.referenceId?.trim();
+    if (referenceId) {
+      body.reference_id = referenceId;
     }
 
     const response = await fetch('https://api.fish.audio/v1/tts', {

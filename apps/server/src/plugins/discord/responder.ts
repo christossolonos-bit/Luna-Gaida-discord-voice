@@ -119,6 +119,7 @@ export class DiscordTextResponder {
     this.ollama = new OllamaTextClient(config);
     this.tools = createToolRegistry({
       searxngUrl: config.SEARXNG_URL,
+      searchProvider: config.lunaSearchProvider,
       memoryToolsEnabled: config.GIADA_MEMORY_TOOLS_ENABLED
     }).filter((tool) => isToolAvailableForSurface(tool, 'discord'));
   }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseFeedXml } from '../src/research/rssReader.js';
 import { parseLunaCuriosityReply } from '../src/live/lunaCuriosity.js';
+import { formatResearchFindingBlock } from '../src/research/lunaResearchRunner.js';
 
 describe('rssReader', () => {
   it('parses RSS items', () => {
@@ -30,5 +31,22 @@ describe('lunaCuriosity', () => {
       url: null,
       reason: null
     });
+  });
+});
+
+describe('formatResearchFindingBlock', () => {
+  it('tells Luna to answer directly instead of listing headlines', () => {
+    const block = formatResearchFindingBlock({
+      mode: 'search',
+      query: 'mars rover',
+      url: 'https://example.com',
+      title: 'Deep research: mars rover',
+      summary: '### Article\nSource: https://example.com\n\nRover found ice.',
+      source: 'duckduckgo'
+    }, 'what did the mars rover find?');
+
+    expect(block).toMatch(/User question: what did the mars rover find\?/i);
+    expect(block).toMatch(/Do not reply with only headlines/i);
+    expect(block).toMatch(/Rover found ice/);
   });
 });

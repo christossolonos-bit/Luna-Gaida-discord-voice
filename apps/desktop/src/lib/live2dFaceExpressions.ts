@@ -1,4 +1,12 @@
-/** Drive tuzi mian face parameters when the model has no .exp3.json presets. */
+/** Live2D face control — persistent wardrobe + transient face overlays + generic fallback. */
+
+import { resolveTuziAnheiExpressions } from './tuziAnheiExpressions.js';
+import {
+  buildWardrobeParamValues,
+  FACE_OVERLAY_LAYERS,
+  FACE_OVERLAY_PARAM_IDS,
+  type AvatarWardrobePayload
+} from './tuziAnheiWardrobe.js';
 
 const EXPRESSION_PARAMS = [
   'ParamEyeLSmile',
@@ -17,6 +25,16 @@ const EYE_OPEN_BASELINE = 1;
 const MANAGED_PARAMS = [...EXPRESSION_PARAMS, ...EYE_OPEN_PARAMS] as const;
 
 export const LIP_SYNC_PARAM = 'ParamMouthOpenY';
+
+const WARDROBE_EXPRESSION_NAMES = new Set([
+  'changsanfa', 'heifajia', 'huluobofajia', 'houmahuabian', 'houqun', 'daemao', 'heihua'
+]);
+
+const EXPRESSION_MOTIONS: Record<string, string> = {
+  liulei: 'Tears',
+  xueji: 'Blood',
+  benghuai: 'Idle'
+};
 
 const PRESETS: Record<string, Partial<Record<(typeof MANAGED_PARAMS)[number], number>>> = {
   neutral: {},
@@ -63,7 +81,7 @@ const PRESETS: Record<string, Partial<Record<(typeof MANAGED_PARAMS)[number], nu
   }
 };
 
-const ALIASES: Record<string, string> = {
+const GENERIC_ALIASES: Record<string, string> = {
   smile: 'happy',
   grin: 'happy',
   laugh: 'happy',
@@ -77,6 +95,21 @@ const ALIASES: Record<string, string> = {
 
 type ParamValues = Record<(typeof MANAGED_PARAMS)[number], number>;
 
+interface CubismCore {
+  getParameterIndex?: (id: string) => number;
+  setParameterValueByIndex?: (index: number, value: number) => void;
+}
+
+interface Live2dModelLike {
+  motion?: (group: string, index?: number, priority?: number) => Promise<boolean>;
+  internalModel?: {
+    coreModel?: CubismCore;
+    motionManager?: {
+      definitions?: Record<string, unknown[]>;
+    };
+  };
+}
+
 function baselineValues(): ParamValues {
   const values = Object.fromEntries(EXPRESSION_PARAMS.map((id) => [id, 0])) as ParamValues;
   for (const id of EYE_OPEN_PARAMS) {
@@ -89,9 +122,9 @@ function defaultForParam(id: (typeof MANAGED_PARAMS)[number]) {
   return EYE_OPEN_PARAMS.includes(id as (typeof EYE_OPEN_PARAMS)[number]) ? EYE_OPEN_BASELINE : 0;
 }
 
-function resolvePreset(name: string) {
+function resolveGenericPreset(name: string) {
   const key = String(name || 'neutral').toLowerCase();
-  const resolved = ALIASES[key] ?? key;
+  const resolved = GENERIC_ALIASES[key] ?? key;
   return PRESETS[resolved] ? resolved : 'neutral';
 }
 
@@ -110,21 +143,36 @@ function buildTarget(presetName: string, intensity: number): ParamValues {
   return target;
 }
 
-function getCoreModel(model: { internalModel?: { coreModel?: CubismCore } } | null) {
+function getCoreModel(model: Live2dModelLike | null) {
   return model?.internalModel?.coreModel ?? null;
 }
 
-interface CubismCore {
-  getParameterIndex?: (id: string) => number;
-  setParameterValueByIndex?: (index: number, value: number) => void;
+function writeParams(values: Record<string, number>) {
+  const core = getCoreModel(getModel());
+  if (!core) return;
+  for (const [id, value] of Object.entries(values)) {
+    const index = core.getParameterIndex?.(id);
+    if (index != null && index >= 0) {
+      core.setParameterValueByIndex?.(index, value);
+    }
+  }
 }
 
-export function createLive2dFaceController(getModel: () => { internalModel?: { coreModel?: CubismCore } } | null) {
+function playMotion(model: Live2dModelLike | null, group: string | null | undefined) {
+  if (!group || !model?.motion) return;
+  const defs = model.internalModel?.motionManager?.definitions?.[group];
+  if (defs?.length) {
+    void model.motion(group);
+  }
+}
+
+export function createLive2dFaceController(getModel: () => Live2dModelLike | null) {
   let activeValues = baselineValues();
   let fadeTimer: ReturnType<typeof setInterval> | null = null;
   let holdTimer: ReturnType<typeof setTimeout> | null = null;
+  let wardrobeState: AvatarWardrobePayload = { outfit: 'light', accessories: [] };
 
-  function writeAll(values: ParamValues) {
+  function writeGeneric(values: ParamValues) {
     const core = getCoreModel(getModel());
     if (!core) return;
     for (const [id, value] of Object.entries(values)) {
@@ -146,10 +194,21 @@ export function createLive2dFaceController(getModel: () => { internalModel?: { c
     }
   }
 
+  function clearFaceOverlays() {
+    const values = Object.fromEntries(FACE_OVERLAY_PARAM_IDS.map((id) => [id, 0]));
+    writeParams(values);
+  }
+
+  function applyWardrobeParams() {
+    writeParams(buildWardrobeParamValues(wardrobeState));
+  }
+
   function applyBaseline() {
     clearTimers();
     activeValues = baselineValues();
-    writeAll(activeValues);
+    writeGeneric(activeValues);
+    clearFaceOverlays();
+    applyWardrobeParams();
   }
 
   function animateTo(targetValues: ParamValues, durationMs: number, onDone?: () => void) {
@@ -164,7 +223,7 @@ export function createLive2dFaceController(getModel: () => { internalModel?: { c
         const to = targetValues[id] ?? defaultForParam(id);
         activeValues[id] = from + (to - from) * eased;
       }
-      writeAll(activeValues);
+      writeGeneric(activeValues);
       if (t >= 1) {
         clearInterval(fadeTimer!);
         fadeTimer = null;
@@ -173,10 +232,10 @@ export function createLive2dFaceController(getModel: () => { internalModel?: { c
     }, 16);
   }
 
-  function setExpression(name: string, intensity = 1) {
-    const presetName = resolvePreset(name);
+  function setGenericExpression(name: string, intensity = 1) {
+    const presetName = resolveGenericPreset(name);
     if (presetName === 'neutral' || intensity <= 0) {
-      animateTo(baselineValues(), 280);
+      animateTo(baselineValues(), 280, () => applyWardrobeParams());
       return;
     }
 
@@ -184,9 +243,65 @@ export function createLive2dFaceController(getModel: () => { internalModel?: { c
     animateTo(target, 220, () => {
       holdTimer = setTimeout(() => {
         holdTimer = null;
-        animateTo(baselineValues(), 650);
+        animateTo(baselineValues(), 650, () => applyWardrobeParams());
       }, 4200);
     });
+  }
+
+  function setFaceOverlay(names: string[], intensity = 1) {
+    if (intensity <= 0) {
+      clearFaceOverlays();
+      return;
+    }
+
+    clearTimers();
+    clearFaceOverlays();
+
+    const values: Record<string, number> = {};
+    for (const name of names) {
+      const layer = FACE_OVERLAY_LAYERS[name.toLowerCase()];
+      if (layer) values[layer.param] = layer.value * intensity;
+    }
+    writeParams(values);
+
+    const primary = names[0]?.toLowerCase();
+    if (primary) playMotion(getModel(), EXPRESSION_MOTIONS[primary]);
+
+    holdTimer = setTimeout(() => {
+      holdTimer = null;
+      clearFaceOverlays();
+      applyWardrobeParams();
+    }, 4200);
+  }
+
+  function setExpression(name: string, intensity = 1) {
+    const key = String(name || 'neutral').toLowerCase();
+    if (!key || key === 'neutral' || intensity <= 0) {
+      applyBaseline();
+      return;
+    }
+
+    const nativeNames = resolveTuziAnheiExpressions(key).filter(
+      (item) => !WARDROBE_EXPRESSION_NAMES.has(item)
+    );
+    if (nativeNames.length) {
+      setFaceOverlay(nativeNames, intensity);
+      return;
+    }
+
+    setGenericExpression(key, intensity);
+  }
+
+  function setWardrobe(payload: AvatarWardrobePayload) {
+    wardrobeState = {
+      outfit: payload.outfit,
+      accessories: [...payload.accessories],
+      motion: payload.motion ?? null
+    };
+    applyWardrobeParams();
+    if (payload.motion) {
+      playMotion(getModel(), payload.motion);
+    }
   }
 
   function reset() {
@@ -195,8 +310,11 @@ export function createLive2dFaceController(getModel: () => { internalModel?: { c
 
   function dispose() {
     clearTimers();
+    wardrobeState = { outfit: 'light', accessories: [] };
     activeValues = baselineValues();
+    clearFaceOverlays();
+    applyWardrobeParams();
   }
 
-  return { setExpression, reset, dispose, applyBaseline };
+  return { setExpression, setWardrobe, reset, dispose, applyBaseline };
 }

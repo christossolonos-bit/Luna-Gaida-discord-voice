@@ -34,14 +34,13 @@ export function isTrustedLinkSender(config: AppConfig, sender: LinkSenderIdentit
   });
 }
 
-export async function readTrustedUserLinks(
+export async function readUrlsForResearch(
   config: AppConfig,
   userText: string,
   researchStore: LunaResearchStore | null | undefined,
-  sender: LinkSenderIdentity,
-  senderLabel?: string
+  who = 'They'
 ): Promise<string | null> {
-  if (!config.lunaResearchEnabled || !isTrustedLinkSender(config, sender)) {
+  if (!config.lunaResearchEnabled) {
     return null;
   }
 
@@ -50,51 +49,68 @@ export async function readTrustedUserLinks(
     return null;
   }
 
-  const who = senderLabel ?? sender.displayName ?? sender.username ?? 'them';
   const blocks: string[] = [];
-
   for (const url of urls) {
     try {
-      if (isVideoUrl(url)) {
-        const watched = await watchSharedVideo(config, url);
-        researchStore?.record({
-          source: 'trusted_video',
-          mode: 'read',
-          query: watched.method,
-          url: watched.url,
-          title: watched.title,
-          summary: watched.transcript.slice(0, 4000)
-        });
-        blocks.push(formatWatchedVideoBlock(watched, who));
-        continue;
-      }
-
-      const finding = await runLunaResearch(config, { mode: 'read', url });
-      if (!finding) continue;
-
-      researchStore?.record({
-        source: 'trusted_link',
-        mode: 'read',
-        query: null,
-        url: finding.url,
-        title: finding.title,
-        summary: finding.summary
-      });
-
-      blocks.push([
-        `${who} shared a link with you (read it and give your real reaction — what stood out, your take, or a question it raised):`,
-        formatResearchFindingBlock(finding)
-      ].join('\n'));
+      const block = await researchUrlForMessage(config, url, researchStore, who);
+      if (block) blocks.push(block);
     } catch (error) {
-      logger.warn('Trusted link read failed', {
+      logger.warn('URL research failed', {
         url,
-        userId: sender.userId,
         error: error instanceof Error ? error.message : String(error)
       });
     }
   }
 
   return blocks.length ? blocks.join('\n\n') : null;
+}
+
+async function researchUrlForMessage(
+  config: AppConfig,
+  url: string,
+  researchStore: LunaResearchStore | null | undefined,
+  who: string
+) {
+  if (isVideoUrl(url)) {
+    const watched = await watchSharedVideo(config, url);
+    researchStore?.record({
+      source: 'shared_video',
+      mode: 'read',
+      query: watched.method,
+      url: watched.url,
+      title: watched.title,
+      summary: watched.transcript.slice(0, 4000)
+    });
+    return formatWatchedVideoBlock(watched, who);
+  }
+
+  const finding = await runLunaResearch(config, { mode: 'read', url });
+  if (!finding) return null;
+
+  researchStore?.record({
+    source: 'shared_link',
+    mode: 'read',
+    query: null,
+    url: finding.url,
+    title: finding.title,
+    summary: finding.summary
+  });
+
+  return [
+    `${who} shared a link (read it and explain what matters — your take, not a dry recap):`,
+    formatResearchFindingBlock(finding)
+  ].join('\n');
+}
+
+export async function readTrustedUserLinks(
+  config: AppConfig,
+  userText: string,
+  researchStore: LunaResearchStore | null | undefined,
+  sender: LinkSenderIdentity,
+  senderLabel?: string
+): Promise<string | null> {
+  const who = senderLabel ?? sender.displayName ?? sender.username ?? 'them';
+  return readUrlsForResearch(config, userText, researchStore, who);
 }
 
 const VOICE_TEXT_CHAT_PREFIX = 'Discord voice channel text chat messages sent while you were connected to voice:';

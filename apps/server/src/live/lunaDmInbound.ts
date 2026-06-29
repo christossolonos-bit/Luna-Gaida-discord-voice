@@ -5,9 +5,10 @@ import type { LunaLifeStore } from '../memory/lunaLifeStore.js';
 import type { LunaDmStore } from '../memory/lunaDmStore.js';
 import { OllamaTextClient } from '../providers/ollamaText.js';
 import { assertDiscordSafe, sanitizeForDiscord } from '../policy/privacy.js';
-import { buildResearchContextBlock, buildMessageResearchBlock } from './researchForMessage.js';
+import { buildResearchContextBlock, buildMessageResearchBlock, buildResearchCapabilityBlock } from './researchForMessage.js';
 import { LunaResearchStore } from '../memory/lunaResearchStore.js';
-import { buildRelationshipPromptBlock } from '../memory/relationshipBond.js';
+import { buildRelationshipPromptBlock, buildAbsencePromptBlock, hoursSinceLastContact, mostRecentContactAt } from '../memory/relationshipBond.js';
+import { buildAvatarAwarenessPromptBlock, resolveAvatarWardrobe } from './tuziAnheiWardrobe.js';
 import type { ConversationResearchContext } from '../research/conversationResearch.js';
 
 export interface LunaInboundDmInput {
@@ -36,6 +37,7 @@ export async function generateLunaInboundDmReply(
 
   let memoryBlock = '';
   let relationshipBlock = '';
+  let absenceBlock = '';
   if (userVoiceMemory && input.guildId) {
     const record = userVoiceMemory.get(input.guildId, input.authorId);
     if (record?.summary?.trim()) {
@@ -45,6 +47,17 @@ export async function generateLunaInboundDmReply(
       relationshipBlock = buildRelationshipPromptBlock(input.displayName, record.relationship);
     } else {
       relationshipBlock = buildRelationshipPromptBlock(input.displayName, null);
+    }
+    const lastContact = mostRecentContactAt(record?.updatedAt, lunaDmStore?.lastDmAt(input.authorId));
+    const hoursSince = hoursSinceLastContact(lastContact);
+    const absence = buildAbsencePromptBlock(
+      input.displayName,
+      record?.relationship?.trim() || null,
+      hoursSince,
+      config.lunaAbsenceMissHours
+    );
+    if (absence) {
+      absenceBlock = absence;
     }
   }
 
@@ -56,6 +69,14 @@ export async function generateLunaInboundDmReply(
     }
   }
 
+  const relationshipNotes = userVoiceMemory && input.guildId
+    ? userVoiceMemory.get(input.guildId, input.authorId)?.relationship ?? null
+    : null;
+  const avatarBlock = buildAvatarAwarenessPromptBlock(
+    relationshipNotes,
+    resolveAvatarWardrobe({ relationship: relationshipNotes })
+  );
+
   const researchContext: ConversationResearchContext = {
     recentLines: input.recentDmLines,
     voiceMemorySummary: memoryBlock.replace(/^What you remember about [^:]+:\n/, ''),
@@ -65,6 +86,7 @@ export async function generateLunaInboundDmReply(
 
   const researchBlock = researchStore
     ? [
+      buildResearchCapabilityBlock(),
       buildResearchContextBlock(researchStore),
       await buildMessageResearchBlock(
         config,
@@ -88,8 +110,11 @@ export async function generateLunaInboundDmReply(
     'When they share a link you read, react naturally — your honest take, what caught your eye, or a question it sparked. Do not just summarize.',
     'When they share a video you watched, comment on what actually happens in it — moments, jokes, opinions — using the transcript, not just the title.',
     'When they ask about news, headlines, or current events, discuss those topics directly using your research notes — share specifics and your take; do not invent facts beyond research.',
+    'You have live DuckDuckGo search in this session. Never deny web access or cite a training-data cutoff — that is wrong for you.',
+    'You search the live web via DuckDuckGo for current facts when needed — research notes below are from that search; do not invent beyond them.',
     'Relationship notes only shape warmth and tone; they never excuse dodging the question they asked.',
     'If relationship notes are annoyed or hostile, you may be cold, sarcastic, angry, or provocative — bonds cool down too.',
+    avatarBlock,
     'Keep it concise: usually 1–4 sentences unless they asked for detail.',
     'No asterisk stage directions, no voice tags, no markdown headers.',
     'If you genuinely have nothing to say, reply with exactly [[LUNA_NO_REPLY]].',
@@ -98,6 +123,7 @@ export async function generateLunaInboundDmReply(
       : '',
     memoryBlock,
     relationshipBlock,
+    absenceBlock,
     lifeBlock,
     researchBlock
   ].filter(Boolean).join('\n');

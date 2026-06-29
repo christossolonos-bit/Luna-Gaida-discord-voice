@@ -69,6 +69,69 @@ export class OllamaTextClient {
     return text;
   }
 
+  /** Multimodal vision via Ollama native /api/chat (e.g. qwen3.5:4b). */
+  async describeVisionImages(input: {
+    system?: string;
+    userText: string;
+    images: Array<{ label: string; mimeType: string; dataBase64: string }>;
+    maxCompletionTokens?: number;
+    temperature?: number;
+    model?: string;
+  }) {
+    if (!input.images.length) {
+      return '';
+    }
+
+    const url = resolveOllamaNativeChatUrl(this.config.ollamaApiUrl);
+    const model = input.model ?? this.config.ollamaVisionModel ?? this.config.ollamaModel;
+    const timeoutMs = Math.min(Math.max(this.config.ollamaTimeoutMs, 60_000), 180_000);
+    const userText = [
+      input.userText,
+      ...input.images.map((image) => `Snapshot label: ${image.label}`)
+    ].join('\n\n');
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          ...(input.system ? [{ role: 'system', content: input.system }] : []),
+          {
+            role: 'user',
+            content: userText,
+            images: input.images.map((image) => stripDataUrl(image.dataBase64))
+          }
+        ],
+        stream: false,
+        think: false,
+        options: {
+          temperature: input.temperature ?? 0.3,
+          num_predict: input.maxCompletionTokens ?? 1024
+        }
+      }),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+
+    const raw = await response.text();
+    let payload: { message?: NativeChatMessage; error?: string };
+    try {
+      payload = JSON.parse(raw) as { message?: NativeChatMessage; error?: string };
+    } catch {
+      payload = {};
+    }
+
+    if (!response.ok) {
+      throw new Error(`Ollama vision HTTP ${response.status}: ${payload.error ?? raw.slice(0, 300)}`);
+    }
+
+    const text = extractNativeVisionText(payload.message);
+    if (!text) {
+      throw new Error('Ollama vision returned no description');
+    }
+    return text;
+  }
+
   /** Native Ollama /api/chat with JSON output (initiative, DMs, curiosity). */
   async generateJson(input: {
     system: string;
@@ -222,4 +285,20 @@ function extractAssistantText(message: { content?: string | null; reasoning?: st
   if (!reasoning) return '';
   const withoutThinking = stripModelArtifacts(reasoning.replace(/^Thinking Process:\s*/i, '').trim());
   return withoutThinking.split('\n').find((line) => line.trim())?.trim() ?? withoutThinking.slice(0, 500);
+}
+
+function extractNativeVisionText(message: NativeChatMessage | undefined) {
+  const content = message?.content?.trim();
+  if (content) {
+    return stripModelArtifacts(content);
+  }
+  const thinking = message?.thinking?.trim();
+  if (!thinking) return '';
+  return stripModelArtifacts(thinking.replace(/^Thinking Process:\s*/i, '').trim());
+}
+
+function stripDataUrl(data: string) {
+  if (!data.startsWith('data:')) return data;
+  const comma = data.indexOf(',');
+  return comma >= 0 ? data.slice(comma + 1) : data;
 }

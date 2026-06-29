@@ -35,13 +35,13 @@ describe('trustedLinkSharing', () => {
     })).toBe(false);
   });
 
-  it('does not read links for untrusted senders', async () => {
+  it('reads links for any sender when research is enabled', async () => {
     const result = await readTrustedUserLinks(
       baseConfig,
       'see https://example.com',
       null,
       { userId: 'x', username: 'alex', displayName: 'Alex' }
     );
-    expect(result).toBeNull();
+    expect(result).toContain('https://example.com');
   });
 });

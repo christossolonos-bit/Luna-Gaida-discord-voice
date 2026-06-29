@@ -1,6 +1,7 @@
 import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -55,6 +56,7 @@ import {
   generateLunaInboundDmReply,
   pickGuildForDmUser
 } from '../../live/lunaDmInbound.js';
+import { buildLunaDmVoiceAttachment } from '../../live/lunaDmTts.js';
 
 const MAX_DISCORD_IMAGE_ATTACHMENTS = 4;
 const MAX_DISCORD_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -796,7 +798,18 @@ export class DiscordPlugin implements GiadaPlugin {
       return;
     }
 
-    await message.reply(reply);
+    const relationship = guildId && this.userVoiceMemory
+      ? this.userVoiceMemory.get(guildId, message.author.id)?.relationship ?? null
+      : null;
+    const voiceAttachment = await buildLunaDmVoiceAttachment(this.config, reply, relationship);
+    if (voiceAttachment) {
+      await message.reply({
+        content: reply,
+        files: [new AttachmentBuilder(voiceAttachment.buffer, { name: voiceAttachment.name })]
+      });
+    } else {
+      await message.reply(reply);
+    }
     publishActivity({
       level: 'assistant',
       title: `Luna DM ← ${displayName}`,

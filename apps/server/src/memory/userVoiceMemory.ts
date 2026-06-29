@@ -164,6 +164,27 @@ export class UserVoiceMemoryStore {
     `).all(limit) as VoiceUserMemoryRow[];
     return rows.map(mapRow);
   }
+
+  /** Calm feelings after a fight — keeps facts, replaces bond with overnight cool-off. */
+  resetFeelingsToCooloff(guildId: string, userId: string, relationship: string): VoiceUserMemory | null {
+    const existing = this.get(guildId, userId);
+    if (!existing) return null;
+    this.saveRelationship(guildId, userId, existing.displayName, relationship);
+    return this.get(guildId, userId);
+  }
+
+  /** Forget everything about a caller — facts, feelings, and history. */
+  deleteCaller(guildId: string, userId: string): boolean {
+    const result = this.db.prepare(`
+      DELETE FROM luna_voice_user_memory
+      WHERE guild_id = ? AND user_id = ?
+    `).run(guildId, userId);
+    return result.changes > 0;
+  }
+
+  close() {
+    this.db.close();
+  }
 }
 
 export function normalizeBulletSummary(text: string, maxBullets = 8, maxWordsPerBullet = 14) {

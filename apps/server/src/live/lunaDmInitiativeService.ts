@@ -1,4 +1,5 @@
 import type { Client } from 'discord.js';
+import { AttachmentBuilder } from 'discord.js';
 import type { AppConfig } from '../config/env.js';
 import type { PersonalityInstructionProvider } from '../personality/service.js';
 import { LunaDmStore } from '../memory/lunaDmStore.js';
@@ -9,6 +10,7 @@ import { publishActivity } from '../monitor/activityFeed.js';
 import { logger } from '../logging/logger.js';
 import { assertDiscordSafe } from '../policy/privacy.js';
 import { stripRoleplayMarkupForSpeech } from './voiceActions.js';
+import { buildLunaDmVoiceAttachment } from './lunaDmTts.js';
 import {
   buildLunaDmPrompt,
   LUNA_DM_JSON_SCHEMA,
@@ -235,7 +237,19 @@ export class LunaDmInitiativeService {
     }
 
     try {
-      await dm.send(message);
+      const voiceAttachment = await buildLunaDmVoiceAttachment(
+        this.config,
+        message,
+        target.relationship?.trim() || null
+      );
+      if (voiceAttachment) {
+        await dm.send({
+          content: message,
+          files: [new AttachmentBuilder(voiceAttachment.buffer, { name: voiceAttachment.name })]
+        });
+      } else {
+        await dm.send(message);
+      }
     } catch (error) {
       const code = (error as { code?: number })?.code;
       logger.warn('Luna DM send failed', {

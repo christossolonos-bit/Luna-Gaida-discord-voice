@@ -12,6 +12,7 @@ export const FISH_AUDIO_EXPRESSION_PROMPT = [
   '- Word-level control: place tags IMMEDIATELY BEFORE the word or phrase they affect.',
   '  Example: "I [whispering] did not expect that" or "That is [very excited] amazing!"',
   '- Vary pitch and pace across sentences — do not use one flat mood for the whole reply.',
+  '- Your delivery shifts with emotion: shout when furious, whisper when intimate or secretive, slow down when sad, speed up when excited.',
   '- Match tags to how YOU feel about this caller, your relationship, and your life — never generic cheer.',
   '- Use *asterisk actions* for avatar motion; ALSO mirror the feeling with Fish tags in the spoken line.',
   '',
@@ -58,6 +59,15 @@ export function stripFishAudioTagsForDisplay(text: string) {
     .replace(/\[[^\]]+\]\s*/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+export function extractFishTags(text: string): string[] {
+  const tags: string[] = [];
+  for (const match of text.matchAll(/\[(?<tag>[^\]]+)\]/g)) {
+    const tag = match.groups?.tag?.trim().toLowerCase();
+    if (tag) tags.push(tag);
+  }
+  return tags;
 }
 
 function normalizeAction(action: string) {
@@ -135,6 +145,11 @@ function inferTagsForSentence(sentence: string, moodTags: string[]): string[] {
   if (/\b(haha|lol|funny)\b/.test(lower)) tags.push('[chuckling]');
   if (/\b(wait|hold on|hang on)\b/.test(lower)) tags.push('[surprised]');
   if (/\b(maybe|perhaps|i guess)\b/.test(lower)) tags.push('[uncertain]');
+  if (/\b(no way|can't believe|unbelievable)\b/.test(lower)) tags.push('[surprised]', '[excited]');
+  if (/\b(please|help me|scared)\b/.test(lower)) tags.push('[nervous]', '[soft tone]');
+  if (/\b(stupid|idiot|annoying)\b/.test(lower)) tags.push('[angry]', '[frustrated]');
+  if (/\b(miss you|goodbye|farewell)\b/.test(lower)) tags.push('[sad]', '[soft tone]');
+  if (/!{2,}/.test(sentence)) tags.push('[very excited]');
 
   return [...new Set(tags)].slice(0, 3);
 }

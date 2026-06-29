@@ -96,7 +96,7 @@ export function getRecentlyCoveredKeywords(researchStore: LunaResearchStore, lim
 }
 
 export function enhanceResearchIntent(
-  intent: { mode: LunaResearchMode; query?: string; url?: string },
+  intent: { mode: LunaResearchMode; query?: string; url?: string; deep?: boolean },
   context: ConversationResearchContext | undefined,
   researchStore: LunaResearchStore | undefined
 ): {
@@ -106,6 +106,7 @@ export function enhanceResearchIntent(
   excludeKeywords?: string[];
   excludeUrls?: string[];
   preferDigest?: boolean;
+  deep?: boolean;
 } {
   const excludeKeywords = researchStore ? getRecentlyCoveredKeywords(researchStore) : [];
   const excludeUrls = researchStore?.recent(8).map((record) => record.url).filter(Boolean) as string[] ?? [];
@@ -125,17 +126,17 @@ export function enhanceResearchIntent(
   if (intent.mode === 'search' && intent.query?.trim()) {
     const conversationQuery = context ? buildConversationResearchQuery(context, 'search') : null;
     if (conversationQuery && NEWSISH_RE.test(intent.query)) {
-      return { ...intent, query: conversationQuery, excludeKeywords, excludeUrls };
+      return { ...intent, query: conversationQuery, excludeKeywords, excludeUrls, deep: true };
     }
-    return { ...intent, excludeKeywords, excludeUrls };
+    return { ...intent, excludeKeywords, excludeUrls, deep: intent.deep ?? true };
   }
 
   const conversationQuery = context ? buildConversationResearchQuery(context, 'search') : null;
   if (conversationQuery) {
-    return { mode: 'search', query: conversationQuery, excludeKeywords, excludeUrls };
+    return { mode: 'search', query: conversationQuery, excludeKeywords, excludeUrls, deep: true };
   }
 
-  return { ...intent, excludeKeywords, excludeUrls };
+  return { ...intent, excludeKeywords, excludeUrls, deep: intent.deep };
 }
 
 const NEWSISH_RE = /\b(?:news|headlines?|latest|current)\b/i;
@@ -151,11 +152,11 @@ export function detectConversationFollowUpResearch(
   if (!topics.length) return null;
 
   if (/\b(?:tell me more|go on|what else|anything else|keep going|and\?)\b/i.test(text)) {
-    return { mode: 'search', query: `latest ${topics[0]} updates` };
+    return { mode: 'search', query: `latest ${topics[0]} updates`, deep: true };
   }
 
   if (/\b(?:related to|connected to|because of|since we|you mentioned)\b/i.test(text)) {
-    return { mode: 'search', query: `${topics.slice(0, 2).join(' ')} context` };
+    return { mode: 'search', query: `${topics.slice(0, 2).join(' ')} context`, deep: true };
   }
 
   return null;

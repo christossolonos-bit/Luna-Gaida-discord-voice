@@ -4,6 +4,7 @@ import {
   prepareFishTtsText,
   type FishTtsEnrichContext
 } from './fishAudioExpressions.js';
+import { inferDefaultMoodFromReply } from './fishAudioDelivery.js';
 
 const ASTERISK_ACTION = /\*([^*]+)\*/g;
 const SPOKEN_ASTERISK_ACTION = /\basterisks?\s+([^,.!?;]+?)\s+asterisks?\b/gi;
@@ -45,13 +46,20 @@ export function buildFishTtsFromReply(text: string, context: FishTtsEnrichContex
     })
   );
 
-  const ttsText = prepareFishTtsText(ttsWithActions, { ...context, actions });
+  const ttsText = prepareFishTtsText(ttsWithActions, {
+    ...context,
+    actions,
+    defaultMood: context.defaultMood ?? inferDefaultMoodFromReply(text, context.relationship)
+  });
   const displayText = stripFishAudioTagsForDisplay(stripRoleplayMarkupForSpeech(text));
 
   return { ttsText, displayText, actions };
 }
 
 export function mapActionToExpression(action: string): string | null {
+  const native = mapActionToTuziAnheiExpressions(action);
+  if (native.length) return native[0]!;
+
   const key = action.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
   if (!key) return null;
   if (/\blaugh|\bgiggle|\bchuckle|\bsmile|\bgrin/.test(key)) return 'happy';
@@ -62,6 +70,26 @@ export function mapActionToExpression(action: string): string | null {
   if (/\bwink|\bflirt|\btease/.test(key)) return 'happy';
   if (/\bear|\btail|\bperk|\bthump|\bbounce/.test(key)) return 'happy';
   return null;
+}
+
+function mapActionToTuziAnheiExpressions(action: string): string[] {
+  const key = action.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!key) return [];
+
+  if (/\blaugh|\bgiggle|\bchuckle|\bsmile|\bgrin/.test(key)) return ['lianhong'];
+  if (/\bsigh|\bsad|\bcry|\bsob|\bfrown|\btear/.test(key)) return ['liulei'];
+  if (/\bangry|\bglare|\bscowl|\bfurious/.test(key)) return ['heilian'];
+  if (/\bsurprise|\bgasp|\bshock/.test(key)) return ['yihuo'];
+  if (/\bblush|\bshy|\bembarrass/.test(key)) return ['lianhong'];
+  if (/\bconfus|\bpuzzle|\bhuh/.test(key)) return ['yihuo'];
+  if (/\bsweat|\bnervous|\banxious/.test(key)) return ['hanzhu'];
+  if (/\bbreak|\bmeltdown|\bsnap/.test(key)) return ['benghuai'];
+  if (/\bheart|\blove|\badore/.test(key)) return ['aixin'];
+  if (/\bstar|\bsparkle|\bshine/.test(key)) return ['xingxing'];
+  if (/\bblood|\bcreepy|\bscary/.test(key)) return ['xueji'];
+  if (/\bear|\btail|\bperk|\bbounce/.test(key)) return ['xingxing'];
+
+  return [];
 }
 
 export function shouldReactWithMotion(action: string) {

@@ -228,13 +228,78 @@ function renderMemory(users) {
   }
   memoryPanel.innerHTML = users.map((user) => `
     <article class="memory-user">
-      <h3>${escapeHtml(user.displayName ?? user.userId)}</h3>
+      <div class="memory-user-head">
+        <h3>${escapeHtml(user.displayName ?? user.userId)}</h3>
+        <div class="memory-user-actions">
+          ${user.relationship?.trim() ? `<button type="button" class="memory-reset-btn" data-action="reset-feelings" data-guild-id="${escapeHtml(user.guildId)}" data-user-id="${escapeHtml(user.userId)}" data-name="${escapeHtml(user.displayName ?? user.userId)}">Reset feelings</button>` : ''}
+          <button type="button" class="memory-wipe-btn" data-action="wipe" data-guild-id="${escapeHtml(user.guildId)}" data-user-id="${escapeHtml(user.userId)}" data-name="${escapeHtml(user.displayName ?? user.userId)}">Wipe memory</button>
+        </div>
+      </div>
       <time>Updated ${formatTime(user.updatedAt)}</time>
       ${user.relationship?.trim() ? `<div class="memory-relationship"><strong>How Luna feels</strong><pre>${escapeHtml(user.relationship)}</pre></div>` : ''}
       ${user.summary?.trim() ? `<div class="memory-facts"><strong>Facts</strong><pre>${escapeHtml(user.summary)}</pre></div>` : ''}
     </article>
   `).join('');
 }
+
+async function wipeCallerMemory(guildId, userId, displayName) {
+  const label = displayName || userId;
+  const confirmed = window.confirm(
+    `Wipe all memory for ${label}?\n\n`
+    + 'Luna will forget everything about them — facts, feelings, and history — '
+    + 'and treat them like someone new next time they talk.\n\n'
+    + 'This cannot be undone.'
+  );
+  if (!confirmed) return;
+
+  const response = await fetch('/monitor/memory/wipe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ guildId, userId }),
+  });
+  const payload = await response.json();
+  if (!payload.ok) {
+    window.alert(payload.message || 'Wipe failed.');
+    return;
+  }
+  await refreshStatus();
+}
+
+async function resetCallerFeelings(guildId, userId, displayName) {
+  const label = displayName || userId;
+  const confirmed = window.confirm(
+    `Reset how Luna feels about ${label}?\n\n`
+    + 'She will calm down like after sleeping on a fight — still remembers what happened, '
+    + 'but she stops being hostile. Facts about them are kept.\n\n'
+    + 'This cannot be undone from the monitor.'
+  );
+  if (!confirmed) return;
+
+  const response = await fetch('/monitor/memory/reset-feelings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ guildId, userId }),
+  });
+  const payload = await response.json();
+  if (!payload.ok) {
+    window.alert(payload.message || 'Reset failed.');
+    return;
+  }
+  await refreshStatus();
+}
+
+memoryPanel.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-action]');
+  if (!button) return;
+  const { guildId, userId, name, action } = button.dataset;
+  if (action === 'wipe') {
+    void wipeCallerMemory(guildId, userId, name);
+    return;
+  }
+  if (action === 'reset-feelings') {
+    void resetCallerFeelings(guildId, userId, name);
+  }
+});
 
 async function refreshStatus() {
   try {

@@ -66,7 +66,11 @@ export class BrowserRealtimeSession implements RealtimeSession {
     }
     try {
       const apiKey = route.credential === 'byok' ? await this.store.getCredential(this.guildId, 'groq') ?? undefined : undefined;
-      const tools = createToolRegistry({ searxngUrl: this.config.SEARXNG_URL, memoryToolsEnabled: this.config.GIADA_MEMORY_TOOLS_ENABLED })
+      const tools = createToolRegistry({
+        searxngUrl: this.config.SEARXNG_URL,
+        searchProvider: this.config.lunaSearchProvider,
+        memoryToolsEnabled: this.config.GIADA_MEMORY_TOOLS_ENABLED
+      })
         .filter((tool) => tool.declaration.name !== 'searchWeb' || runtime.features.webSearch);
       const text = await this.groq.generate({
         ...(apiKey ? { apiKey } : {}),

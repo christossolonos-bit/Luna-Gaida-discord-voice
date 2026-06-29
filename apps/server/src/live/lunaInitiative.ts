@@ -3,11 +3,18 @@ import type { VoiceCallParticipant } from './liveSession.js';
 /** When Luna checks the room: on join, or on a periodic vibe pass. */
 export type LunaInitiativeTrigger = 'join' | 'vibe_check';
 
+export interface RoomOverheardLine {
+  displayName: string;
+  text: string;
+}
+
 export interface LunaInitiativeHost {
   isChannelAttached(): boolean;
   isBusy(): boolean;
   getGuildId(): string | null;
   getParticipants(): VoiceCallParticipant[];
+  isConversationActive?(): boolean;
+  listenToRoomConversation?(durationSec: number): Promise<RoomOverheardLine[]>;
 }
 
 export const LUNA_INITIATIVE_JSON_SCHEMA = {
@@ -41,6 +48,7 @@ export interface LunaInitiativeContextInput {
     relationship: string;
   }>;
   recentExchanges: string[];
+  overheardConversation?: string[];
   silenceSec: number;
   useFishTts: boolean;
   fishExpressionBlock: string;
@@ -52,6 +60,7 @@ export interface LunaInitiativeContextInput {
 export function summarizeVibeSignals(input: {
   silenceSec: number;
   recentExchanges: string[];
+  overheardConversation?: string[];
   participantCount: number;
   trigger: LunaInitiativeTrigger;
 }) {
@@ -68,7 +77,9 @@ export function summarizeVibeSignals(input: {
     lines.push('Long silence — awkward, sleepy, or everyone checked out.');
   }
 
-  if (!input.recentExchanges.length) {
+  if (input.overheardConversation?.length) {
+    lines.push('You just listened to live conversation in the call — use those lines to read tone and topic.');
+  } else if (!input.recentExchanges.length) {
     lines.push('Almost no conversation yet this session.');
   } else if (input.recentExchanges.length >= 6) {
     lines.push('Chat has been flowing — read the emotional tone from recent lines.');
@@ -93,6 +104,7 @@ export function buildLunaInitiativePrompt(input: LunaInitiativeContextInput) {
   const vibeSignals = summarizeVibeSignals({
     silenceSec: input.silenceSec,
     recentExchanges: input.recentExchanges,
+    overheardConversation: input.overheardConversation,
     participantCount: input.participants.length,
     trigger: input.trigger
   });
@@ -138,9 +150,12 @@ export function buildLunaInitiativePrompt(input: LunaInitiativeContextInput) {
     `People in voice: ${roster}`,
     `Room signals:\n${vibeSignals}`,
     `Quiet for about ${Math.round(input.silenceSec)} seconds since last speech.`,
+    input.overheardConversation?.length
+      ? `What you just overheard in the call (last few seconds — use this to read the vibe):\n${input.overheardConversation.join('\n')}`
+      : null,
     input.recentExchanges.length
-      ? `Recent conversation (use this to read the vibe):\n${input.recentExchanges.join('\n')}`
-      : 'No conversation in this session yet.',
+      ? `Earlier conversation this session:\n${input.recentExchanges.join('\n')}`
+      : input.overheardConversation?.length ? null : 'No conversation in this session yet.',
     input.trigger === 'join'
       ? 'You just entered. Check the vibe and decide whether to join it, shift it, or stay quiet.'
       : 'Check the vibe. Do you want to change it, or let it ride?'

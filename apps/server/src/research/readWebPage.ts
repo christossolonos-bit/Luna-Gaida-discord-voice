@@ -1,4 +1,7 @@
-const USER_AGENT = 'giada-assistant/0.1 (Luna read)';
+const USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+const MIN_USEFUL_TEXT_CHARS = 200;
 
 export interface ReadWebPageResult {
   ok: boolean;
@@ -9,6 +12,20 @@ export interface ReadWebPageResult {
 }
 
 export async function readWebPage(url: string, maxChars = 6000): Promise<ReadWebPageResult> {
+  const direct = await readWebPageDirect(url, maxChars);
+  if (direct.ok && (direct.text?.length ?? 0) >= MIN_USEFUL_TEXT_CHARS) {
+    return direct;
+  }
+
+  const viaJina = await readWebPageViaJina(url, maxChars);
+  if (viaJina.ok && (viaJina.text?.length ?? 0) >= 100) {
+    return viaJina;
+  }
+
+  return direct.ok ? direct : viaJina;
+}
+
+async function readWebPageDirect(url: string, maxChars: number): Promise<ReadWebPageResult> {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -21,7 +38,8 @@ export async function readWebPage(url: string, maxChars = 6000): Promise<ReadWeb
 
   const response = await fetch(parsed.toString(), {
     headers: {
-      accept: 'text/html,application/xhtml+xml,text/plain',
+      accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8',
+      'accept-language': 'en-US,en;q=0.9',
       'user-agent': USER_AGENT
     },
     signal: AbortSignal.timeout(25_000),
@@ -53,6 +71,49 @@ export async function readWebPage(url: string, maxChars = 6000): Promise<ReadWeb
   }
 
   return { ok: true, url: parsed.toString(), title, text };
+}
+
+async function readWebPageViaJina(url: string, maxChars: number): Promise<ReadWebPageResult> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { ok: false, error: 'invalid_url' };
+  }
+
+  const jinaUrl = `https://r.jina.ai/${parsed.toString()}`;
+  const response = await fetch(jinaUrl, {
+    headers: {
+      accept: 'text/plain',
+      'user-agent': USER_AGENT
+    },
+    signal: AbortSignal.timeout(35_000),
+    redirect: 'follow'
+  }).catch((error) => ({ ok: false, error } as const));
+
+  if (!response.ok) {
+    const reason = 'error' in response
+      ? response.error instanceof Error ? response.error.message : String(response.error)
+      : `HTTP ${'status' in response ? response.status : 'unknown'}`;
+    return { ok: false, error: reason, url: parsed.toString() };
+  }
+
+  const raw = await response.text();
+  const text = raw.slice(0, maxChars).trim();
+  if (!text) {
+    return { ok: false, error: 'no_readable_text', url: parsed.toString() };
+  }
+
+  const title = extractJinaTitle(raw) || parsed.hostname;
+  return { ok: true, url: parsed.toString(), title, text };
+}
+
+function extractJinaTitle(markdown: string) {
+  const firstLine = markdown.split('\n').find((line) => line.trim())?.trim() ?? '';
+  const heading = firstLine.match(/^#\s+(.+)/);
+  if (heading?.[1]) return heading[1].trim();
+  const titleLine = markdown.match(/^Title:\s*(.+)$/im);
+  return titleLine?.[1]?.trim() ?? '';
 }
 
 function extractTitle(html: string) {

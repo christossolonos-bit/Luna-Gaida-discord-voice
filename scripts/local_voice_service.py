@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import traceback
+import wave
 from pathlib import Path
 
 _whisper_model = None
@@ -43,6 +45,107 @@ def _get_tts():
     return _tts_model
 
 
+def _wav_duration_sec(wav_path: str) -> float:
+    with wave.open(wav_path, "rb") as handle:
+        return handle.getnframes() / float(handle.getframerate())
+
+
+def _transcribe_file(
+    model,
+    wav_path: str,
+    language: str | None,
+    initial_prompt: str | None,
+    no_speech_threshold: float,
+) -> str:
+    segments, _info = model.transcribe(
+        wav_path,
+        language=language or None,
+        initial_prompt=initial_prompt or None,
+        vad_filter=False,
+        condition_on_previous_text=True,
+        no_speech_threshold=no_speech_threshold,
+        log_prob_threshold=-1.0,
+        compression_ratio_threshold=2.8,
+        beam_size=3,
+        best_of=3,
+    )
+    return " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
+
+
+def _merge_transcript_chunks(chunks: list[str]) -> str:
+    merged = ""
+    for chunk in chunks:
+        text = chunk.strip()
+        if not text:
+            continue
+        if not merged:
+            merged = text
+            continue
+        if text.startswith(merged) or merged.endswith(text):
+            if len(text) > len(merged):
+                merged = text
+            continue
+        overlap = 0
+        maximum = min(len(merged), len(text))
+        for length in range(maximum, 2, -1):
+            if merged[-length:].lower() == text[:length].lower():
+                overlap = length
+                break
+        merged = f"{merged}{text[overlap:]}".strip()
+    return merged.strip()
+
+
+def _transcribe_chunked(
+    model,
+    wav_path: str,
+    language: str | None,
+    initial_prompt: str | None,
+    no_speech_threshold: float,
+    chunk_sec: float = 18.0,
+    overlap_sec: float = 1.5,
+) -> str:
+    with wave.open(wav_path, "rb") as handle:
+        channels = handle.getnchannels()
+        sample_width = handle.getsampwidth()
+        sample_rate = handle.getframerate()
+        frames = handle.readframes(handle.getnframes())
+
+    if channels != 1 or sample_width != 2:
+        return _transcribe_file(model, wav_path, language, initial_prompt, no_speech_threshold)
+
+    frame_count = len(frames) // sample_width
+    chunk_frames = int(sample_rate * chunk_sec)
+    overlap_frames = int(sample_rate * overlap_sec)
+    step_frames = max(1, chunk_frames - overlap_frames)
+    chunks: list[str] = []
+
+    for start in range(0, frame_count, step_frames):
+        end = min(frame_count, start + chunk_frames)
+        if end <= start:
+            break
+        start_byte = start * sample_width
+        end_byte = end * sample_width
+        pcm = frames[start_byte:end_byte]
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp:
+            temp_path = temp.name
+        try:
+            with wave.open(temp_path, "wb") as out:
+                out.setnchannels(1)
+                out.setsampwidth(2)
+                out.setframerate(sample_rate)
+                out.writeframes(pcm)
+            prompt = initial_prompt if not chunks else chunks[-1][-120:] or initial_prompt
+            chunks.append(
+                _transcribe_file(model, temp_path, language, prompt, no_speech_threshold)
+            )
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+        if end >= frame_count:
+            break
+
+    return _merge_transcript_chunks(chunks)
+
+
 def _transcribe(
     wav_path: str,
     model_name: str,
@@ -54,21 +157,25 @@ def _transcribe(
 
     Do not apply VAD or extra noise suppression here — Krisp already ran in
     Discord and a second pass would clip word onsets (e.g. 'hey' -> 'you').
+    Long PTT clips are chunked so Whisper does not drop the tail.
     """
     model = _get_whisper(model_name)
-    segments, _info = model.transcribe(
+    duration_sec = _wav_duration_sec(wav_path)
+    if duration_sec > 22:
+        return _transcribe_chunked(
+            model,
+            wav_path,
+            language,
+            initial_prompt,
+            no_speech_threshold,
+        )
+    return _transcribe_file(
+        model,
         wav_path,
-        language=language or None,
-        initial_prompt=initial_prompt or None,
-        vad_filter=False,
-        condition_on_previous_text=False,
-        no_speech_threshold=no_speech_threshold,
-        log_prob_threshold=-1.0,
-        compression_ratio_threshold=2.8,
-        beam_size=3,
-        best_of=3,
+        language,
+        initial_prompt,
+        no_speech_threshold,
     )
-    return " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
 
 
 def _synthesize(text: str, speaker_wav: str, out_wav: str, language: str) -> None:

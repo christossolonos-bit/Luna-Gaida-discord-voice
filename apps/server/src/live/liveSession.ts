@@ -28,6 +28,7 @@ export type LiveClientEvent =
   | { type: 'audio'; data: string; mimeType: 'audio/pcm;rate=24000' | 'audio/pcm;rate=48000;channels=2' }
   | { type: 'transcript'; speaker: 'user' | 'assistant'; text: string; final?: boolean }
   | { type: 'avatar.expression'; payload: { expression: string; intensity: number } }
+  | { type: 'avatar.wardrobe'; payload: { outfit: 'light' | 'dark'; accessories: string[]; motion?: string | null } }
   | { type: 'avatar.local_audio'; payload: { muted: boolean } }
   | { type: 'avatar.state'; payload: { state: string } }
   | { type: 'avatar.lipsync'; payload: { frameMs: number; open: number[] } }
@@ -106,6 +107,7 @@ export class LiveSessionManager {
       : null;
     this.tools = createToolRegistry({
       searxngUrl: config.SEARXNG_URL,
+      searchProvider: config.lunaSearchProvider,
       memoryToolsEnabled: config.GIADA_MEMORY_TOOLS_ENABLED
     }).filter((tool) => this.toolContextProviders.toolEnabled?.(String(tool.declaration.name ?? '')) ?? true);
   }

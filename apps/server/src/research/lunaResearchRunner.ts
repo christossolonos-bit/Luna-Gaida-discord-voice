@@ -1,7 +1,8 @@
 import type { AppConfig } from '../config/env.js';
 import { fetchRssHeadlines, type RssItem } from './rssReader.js';
 import { readWebPage } from './readWebPage.js';
-import { searchWeb } from './webSearch.js';
+import { searchWeb, type SearchWebOptions } from './webSearch.js';
+import { isVideoUrl, watchSharedVideo } from './watchVideo.js';
 
 export type LunaResearchMode = 'search' | 'rss' | 'read';
 export type LunaResearchPurpose = 'conversation' | 'general';
@@ -17,6 +18,8 @@ export interface LunaResearchOptions {
   excludeUrls?: string[];
   excludeKeywords?: string[];
   preferDigest?: boolean;
+  deep?: boolean;
+  userQuestion?: string;
 }
 
 export interface LunaResearchFinding {
@@ -38,9 +41,12 @@ export async function runLunaResearch(
     return researchFromRss(config, input.query, purpose, options);
   }
   if (input.mode === 'read' && input.url?.trim()) {
-    return researchFromUrl(input.url.trim());
+    return researchFromUrl(config, input.url.trim());
   }
   if (input.mode === 'search' && input.query?.trim()) {
+    if (options.deep ?? config.lunaDeepResearch) {
+      return researchFromSearchDeep(config, input.query.trim(), purpose, options);
+    }
     return researchFromSearch(config, input.query.trim(), purpose, options);
   }
   return null;
@@ -53,14 +59,15 @@ async function researchFromRss(
   options: LunaResearchOptions = {}
 ): Promise<LunaResearchFinding | null> {
   const feeds = config.lunaRssFeeds;
-  if (!feeds.length) return null;
+  const normalizedTopic = topic?.trim();
+  const headlines = feeds.length ? await fetchRssHeadlines(feeds, 6, 24) : [];
 
-  const headlines = await fetchRssHeadlines(feeds, 6, 24);
-  if (!headlines.length) return null;
-
+  if (!headlines.length) {
+    const query = normalizedTopic ? `${normalizedTopic} news` : 'latest world news headlines today';
+    return researchFromSearchDeep(config, query, purpose, options);
+  }
   const filtered = filterHeadlines(headlines, options);
   const pool = filtered.length ? filtered : headlines;
-  const normalizedTopic = topic?.trim();
   const wantsDigest = Boolean(options.preferDigest) || /^recent headlines?$/i.test(normalizedTopic ?? '');
 
   if (wantsDigest) {
@@ -86,6 +93,118 @@ async function researchFromRss(
   };
 }
 
+function searchOptions(config: AppConfig): SearchWebOptions {
+  return {
+    searxngUrl: config.SEARXNG_URL,
+    provider: config.lunaSearchProvider
+  };
+}
+
+const MIN_PAGE_TEXT_CHARS = 250;
+const SEARCH_RESULT_LIMIT = 12;
+const READ_BATCH_SIZE = 3;
+
+const LOW_VALUE_HOST_RE = /^(?:www\.)?(facebook|fb|twitter|x|instagram|tiktok|pinterest|linkedin)\./i;
+
+interface PageExcerpt {
+  url: string;
+  title: string;
+  body: string;
+}
+
+function shouldSkipSearchUrl(url: string) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return LOW_VALUE_HOST_RE.test(host) || host.includes('login') || host.includes('accounts.');
+  } catch {
+    return true;
+  }
+}
+
+async function researchFromSearchDeep(
+  config: AppConfig,
+  query: string,
+  purpose: LunaResearchPurpose = 'general',
+  options: LunaResearchOptions = {}
+): Promise<LunaResearchFinding | null> {
+  const searchQuery = wrapQueryForConversation(query, purpose);
+  const search = await searchWeb(searchQuery, SEARCH_RESULT_LIMIT, searchOptions(config));
+  if (!search.ok || !search.results?.length) {
+    return researchFromSearch(config, query, purpose, options);
+  }
+
+  const excludeUrls = new Set(options.excludeUrls ?? []);
+  const pageBudget = config.lunaDeepResearchPages ?? 5;
+  const maxCharsPerPage = Math.max(
+    1500,
+    Math.floor(config.lunaResearchMaxReadChars / Math.max(pageBudget, 2))
+  );
+  const candidates = search.results.filter(
+    (result) => !excludeUrls.has(result.url) && !shouldSkipSearchUrl(result.url)
+  );
+
+  const excerpts: PageExcerpt[] = [];
+
+  for (let index = 0; index < candidates.length && excerpts.length < pageBudget; index += READ_BATCH_SIZE) {
+    const batch = candidates.slice(index, index + READ_BATCH_SIZE);
+    const reads = await Promise.all(
+      batch.map((result) => fetchPageExcerpt(config, result, maxCharsPerPage))
+    );
+    for (const excerpt of reads) {
+      if (excerpt && excerpt.body.length >= MIN_PAGE_TEXT_CHARS && excerpts.length < pageBudget) {
+        excerpts.push(excerpt);
+      }
+    }
+  }
+
+  if (!excerpts.length) {
+    return researchFromSearch(config, query, purpose, options);
+  }
+
+  const summary = excerpts
+    .map((excerpt) => `### ${excerpt.title}\nSource: ${excerpt.url}\n\n${excerpt.body}`)
+    .join('\n\n---\n\n')
+    .slice(0, config.lunaResearchMaxReadChars);
+
+  return {
+    mode: 'search',
+    query: searchQuery,
+    url: excerpts[0]?.url ?? null,
+    title: `Deep research: ${query}`,
+    summary,
+    source: search.source ?? 'search'
+  };
+}
+
+async function fetchPageExcerpt(
+  config: AppConfig,
+  result: { url: string; title: string; snippet?: string },
+  maxChars: number
+): Promise<PageExcerpt | null> {
+  if (isVideoUrl(result.url)) {
+    const watched = await watchSharedVideo(config, result.url);
+    if (!watched.ok || !watched.transcript.trim()) {
+      return null;
+    }
+    return {
+      url: result.url,
+      title: watched.title || result.title,
+      body: watched.transcript.slice(0, maxChars)
+    };
+  }
+
+  const article = await readWebPage(result.url, maxChars);
+  if (article.ok && article.text && article.text.length >= MIN_PAGE_TEXT_CHARS) {
+    return {
+      url: result.url,
+      title: article.title ?? result.title,
+      body: article.text
+    };
+  }
+
+  return null;
+}
+
 async function researchFromSearch(
   config: AppConfig,
   query: string,
@@ -93,7 +212,7 @@ async function researchFromSearch(
   options: LunaResearchOptions = {}
 ): Promise<LunaResearchFinding | null> {
   const searchQuery = wrapQueryForConversation(query, purpose);
-  const search = await searchWeb(config.SEARXNG_URL, searchQuery, 6);
+  const search = await searchWeb(searchQuery, 6, searchOptions(config));
   if (!search.ok || !search.results?.length) {
     return null;
   }
@@ -192,8 +311,26 @@ function scoreRssItem(item: RssItem, topic: string, penaltyKeywords: string[]) {
   return score;
 }
 
-async function researchFromUrl(url: string): Promise<LunaResearchFinding | null> {
-  const article = await readWebPage(url);
+async function researchFromUrl(config: AppConfig, url: string): Promise<LunaResearchFinding | null> {
+  if (isVideoUrl(url)) {
+    const watched = await watchSharedVideo(config, url);
+    if (!watched.ok && !watched.transcript.trim() && !watched.visualDescription?.trim()) {
+      return null;
+    }
+    return {
+      mode: 'read',
+      query: null,
+      url: watched.url,
+      title: watched.title,
+      summary: [
+        watched.visualDescription ? `What Luna saw on screen:\n${watched.visualDescription}` : null,
+        watched.transcript || watched.error || 'No transcript available.'
+      ].filter(Boolean).join('\n\n'),
+      source: `video_${watched.method}`
+    };
+  }
+
+  const article = await readWebPage(url, config.lunaResearchMaxReadChars);
   if (!article.ok || !article.text) {
     return null;
   }
@@ -229,14 +366,21 @@ function pickRssItem(items: RssItem[], topic: string, penaltyKeywords: string[] 
   return best;
 }
 
-export function formatResearchFindingBlock(finding: LunaResearchFinding) {
-  const lines = [
+export function formatResearchFindingBlock(finding: LunaResearchFinding, userQuestion?: string) {
+  const lines: string[] = [];
+  if (userQuestion?.trim()) {
+    lines.push(`User question: ${userQuestion.trim()}`);
+    lines.push(
+      'Answer that question directly using the article excerpts below. Give specific facts, numbers, names, and dates. Do not reply with only headlines, link lists, or "here are some results".'
+    );
+  }
+  lines.push(
     `Title: ${finding.title}`,
     finding.query ? `Query: ${finding.query}` : null,
-    finding.url ? `Source: ${finding.url}` : null,
-    `Notes: ${finding.summary}`
-  ].filter(Boolean);
-  return lines.join('\n');
+    finding.url ? `Primary source: ${finding.url}` : null,
+    `Article excerpts:\n${finding.summary}`
+  );
+  return lines.filter(Boolean).join('\n');
 }
 
 export function wrapQueryForConversation(query: string, purpose: LunaResearchPurpose = 'conversation') {

@@ -28,6 +28,7 @@ import { voiceCredits } from '../../providers/routing.js';
 import type { PlanFeatures } from '../../platform/features.js';
 import type { MusicController, VoiceController } from '../../tools/registry.js';
 import { logger } from '../../logging/logger.js';
+import { publishActivity } from '../../monitor/activityFeed.js';
 import { broadcastAvatarEvent } from '../../ws/avatarBroadcast.js';
 import { setDiscordVoiceBridgeActive } from '../../live/lunaTtsOutput.js';
 
@@ -127,6 +128,13 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     turnActive: boolean;
     pttRecording: boolean;
     pttInputBytes: number;
+    silenceTimer: ReturnType<typeof setTimeout> | null;
+  }>();
+  private roomListenActive = false;
+  private roomListenLines: Array<{ displayName: string; text: string }> = [];
+  private readonly roomListenByUser = new Map<string, {
+    pcm: Buffer;
+    turnActive: boolean;
     silenceTimer: ReturnType<typeof setTimeout> | null;
   }>();
   private pttUiListener: ((phase: 'idle' | 'recording' | 'processing', detail?: string) => void) | null = null;
@@ -246,10 +254,11 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
       this.live.setInitiativeHost({
         isChannelAttached: () => this.getStatus().attached && !this.destroyed,
         isBusy: () => this.isAssistantSpeaking()
-          || this.activeInputUsers.size > 0
           || (this.live instanceof LocalVoiceSessionManager && this.live.isBusyForInitiative()),
         getGuildId: () => this.guildId,
-        getParticipants: () => this.listVoiceParticipants()
+        getParticipants: () => this.listVoiceParticipants(),
+        isConversationActive: () => this.isConversationActive(),
+        listenToRoomConversation: (durationSec) => this.listenToRoomConversation(durationSec)
       });
     } else {
       this.live = new LiveSessionManager(config, memory, personality, {
@@ -330,6 +339,69 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
 
   getParticipants() {
     return this.listVoiceParticipants();
+  }
+
+  isConversationActive() {
+    if (this.roomListenActive) {
+      return true;
+    }
+    if (this.activeInputUsers.size > 0) {
+      return true;
+    }
+    if (this.diagnostics.lastSpeakingAt) {
+      const ago = Date.now() - new Date(this.diagnostics.lastSpeakingAt).getTime();
+      return ago < 12_000;
+    }
+    return false;
+  }
+
+  async listenToRoomConversation(durationSec: number) {
+    if (this.destroyed || !this.connection || !(this.live instanceof LocalVoiceSessionManager)) {
+      return [];
+    }
+    if (this.roomListenActive) {
+      return [...this.roomListenLines];
+    }
+
+    this.roomListenActive = true;
+    this.roomListenLines = [];
+    this.roomListenByUser.clear();
+
+    for (const [, state] of this.userCaptures) {
+      if (state.turnActive) {
+        state.turnActive = false;
+        if (state.silenceTimer) {
+          clearTimeout(state.silenceTimer);
+          state.silenceTimer = null;
+        }
+      }
+    }
+    this.activeInputUsers.clear();
+    this.diagnostics.activeInputUsers = 0;
+
+    for (const person of this.listVoiceParticipants()) {
+      if (person.userId === this.botUserId) {
+        continue;
+      }
+      this.ensureUserCapture(this.connection, person.userId);
+    }
+
+    publishActivity({
+      level: 'info',
+      title: 'Luna listening to the call',
+      detail: `Eavesdropping for ${durationSec}s to read the vibe`
+    });
+
+    await sleepMs(durationSec * 1000);
+
+    const openUsers = [...this.roomListenByUser.keys()];
+    for (const userId of openUsers) {
+      await this.finishRoomListenTurn(userId);
+    }
+
+    this.roomListenActive = false;
+    this.roomListenByUser.clear();
+    return [...this.roomListenLines];
   }
 
   startPttRecording(userId: string) {
@@ -631,7 +703,7 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     if (this.userCaptures.has(userId)) {
       return;
     }
-    if (mode !== 'ptt' && (Date.now() < this.userInputMutedUntil || this.isAssistantSpeaking())) {
+    if (mode !== 'ptt' && !this.roomListenActive && (Date.now() < this.userInputMutedUntil || this.isAssistantSpeaking())) {
       return;
     }
 
@@ -679,6 +751,10 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
       this.diagnostics.lastDecodedAt = new Date().toISOString();
       const pcm16k = downsampleDiscordPcmForGemini(chunk);
       if (pcm16k.length === 0) {
+        return;
+      }
+      if (this.roomListenActive && mode !== 'ptt') {
+        this.handleRoomListenPcm(userId, pcm16k);
         return;
       }
       if (mode !== 'ptt' && (Date.now() < this.userInputMutedUntil || this.isAssistantSpeaking())) {
@@ -757,10 +833,80 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
     this.userCaptures.delete(userId);
     if (state.turnActive) {
       state.turnActive = false;
-      this.queueGeminiActivityEnd();
+      if (!this.roomListenActive) {
+        this.queueGeminiActivityEnd();
+      }
     }
     this.activeInputUsers.delete(userId);
     this.diagnostics.activeInputUsers = this.activeInputUsers.size;
+  }
+
+  private handleRoomListenPcm(userId: string, pcm16k: Buffer) {
+    const rms = measurePcmRms(pcm16k);
+    const isSpeech = rms >= PCM_SPEECH_RMS_THRESHOLD;
+    let state = this.roomListenByUser.get(userId);
+    if (!state) {
+      state = { pcm: Buffer.alloc(0), turnActive: false, silenceTimer: null };
+      this.roomListenByUser.set(userId, state);
+    }
+
+    if (isSpeech) {
+      if (!state.turnActive) {
+        state.turnActive = true;
+      }
+      state.pcm = Buffer.concat([state.pcm, pcm16k]);
+      this.scheduleRoomListenEnd(userId);
+      return;
+    }
+
+    if (state.turnActive) {
+      state.pcm = Buffer.concat([state.pcm, pcm16k]);
+    }
+  }
+
+  private scheduleRoomListenEnd(userId: string) {
+    const state = this.roomListenByUser.get(userId);
+    if (!state) {
+      return;
+    }
+    if (state.silenceTimer) {
+      clearTimeout(state.silenceTimer);
+    }
+    state.silenceTimer = setTimeout(() => {
+      void this.finishRoomListenTurn(userId);
+    }, this.config.LUNA_SPEECH_END_SILENCE_MS);
+  }
+
+  private async finishRoomListenTurn(userId: string) {
+    const state = this.roomListenByUser.get(userId);
+    if (!state?.turnActive) {
+      return;
+    }
+    state.turnActive = false;
+    if (state.silenceTimer) {
+      clearTimeout(state.silenceTimer);
+      state.silenceTimer = null;
+    }
+
+    const pcm = state.pcm;
+    state.pcm = Buffer.alloc(0);
+    const minBytes = GEMINI_INPUT_RATE * 2 * 0.3;
+    if (pcm.length < minBytes) {
+      return;
+    }
+    if (!(this.live instanceof LocalVoiceSessionManager)) {
+      return;
+    }
+
+    const speaker = this.buildSpeakerContext(userId);
+    const transcript = await this.live.transcribePcmForEavesdrop(pcm, speaker);
+    if (!transcript) {
+      return;
+    }
+    this.roomListenLines.push({
+      displayName: speaker.displayName,
+      text: transcript
+    });
   }
 
   private receiveUserSpeech(connection: VoiceConnection, userId: string) {
@@ -956,7 +1102,7 @@ export class DiscordVoiceBridge implements MusicController, VoiceController {
   private handleLiveEvent(event: LiveClientEvent) {
     if (event.type === 'avatar.lipsync') {
       return;
-    } else if (event.type === 'avatar.state' || event.type === 'avatar.expression' || event.type === 'avatar.model.change') {
+    } else if (event.type === 'avatar.state' || event.type === 'avatar.expression' || event.type === 'avatar.wardrobe' || event.type === 'avatar.model.change') {
       broadcastAvatarEvent(event);
     }
     if (event.type === 'avatar.state' && event.payload.state === 'idle' && this.usageReservation && this.usage) {
@@ -2369,4 +2515,10 @@ function measurePcmRms(pcm: Buffer) {
     count += 1;
   }
   return Math.sqrt(sumSq / count);
+}
+
+function sleepMs(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

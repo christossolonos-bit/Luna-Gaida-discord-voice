@@ -2,9 +2,10 @@ import type { FastifyInstance } from 'fastify';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listActivity, subscribeActivity } from './activityFeed.js';
+import { listActivity, subscribeActivity, publishActivity } from './activityFeed.js';
 import type { UserVoiceMemoryStore } from '../memory/userVoiceMemory.js';
 import type { LunaLifeStore } from '../memory/lunaLifeStore.js';
+import { buildCooloffRelationshipNotes } from '../memory/relationshipBond.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -106,6 +107,86 @@ export async function registerMonitorRoutes(
       updatedAt: record.updatedAt
     })) ?? []
   }));
+
+  app.post('/monitor/memory/reset-feelings', async (request) => {
+    const body = (request.body ?? {}) as { guildId?: string; userId?: string };
+    const guildId = body.guildId?.trim();
+    const userId = body.userId?.trim();
+    if (!guildId || !userId) {
+      return { ok: false, message: 'guildId and userId are required.' };
+    }
+    if (!voiceMemory) {
+      return { ok: false, message: 'Voice memory is disabled.' };
+    }
+
+    const before = voiceMemory.get(guildId, userId);
+    if (!before) {
+      return { ok: false, message: 'No saved memory for this caller.' };
+    }
+
+    const updated = voiceMemory.resetFeelingsToCooloff(
+      guildId,
+      userId,
+      buildCooloffRelationshipNotes()
+    );
+    if (!updated) {
+      return { ok: false, message: 'Could not reset feelings.' };
+    }
+
+    const who = updated.displayName ?? userId;
+    publishActivity({
+      level: 'info',
+      title: 'Feelings reset',
+      detail: `${who} — Luna cooled off overnight (facts kept, bond de-escalated)`
+    });
+
+    return {
+      ok: true,
+      message: 'Luna calmed down. She still remembers what happened, but she is not hostile anymore.',
+      user: {
+        displayName: updated.displayName,
+        userId: updated.userId,
+        guildId: updated.guildId,
+        summary: updated.summary,
+        relationship: updated.relationship,
+        updatedAt: updated.updatedAt
+      }
+    };
+  });
+
+  app.post('/monitor/memory/wipe', async (request) => {
+    const body = (request.body ?? {}) as { guildId?: string; userId?: string };
+    const guildId = body.guildId?.trim();
+    const userId = body.userId?.trim();
+    if (!guildId || !userId) {
+      return { ok: false, message: 'guildId and userId are required.' };
+    }
+    if (!voiceMemory) {
+      return { ok: false, message: 'Voice memory is disabled.' };
+    }
+
+    const before = voiceMemory.get(guildId, userId);
+    if (!before) {
+      return { ok: false, message: 'No saved memory for this caller.' };
+    }
+
+    const wiped = voiceMemory.deleteCaller(guildId, userId);
+    if (!wiped) {
+      return { ok: false, message: 'Could not wipe memory.' };
+    }
+
+    const who = before.displayName ?? userId;
+    publishActivity({
+      level: 'warn',
+      title: 'Caller memory wiped',
+      detail: `${who} — Luna forgot everything about them`
+    });
+
+    return {
+      ok: true,
+      message: 'Memory wiped. Luna will treat them like someone new next time they talk.'
+    };
+  });
 
   if (ptt) {
     app.post('/monitor/ptt/start', async (request) => {

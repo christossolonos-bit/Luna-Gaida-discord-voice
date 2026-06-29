@@ -80,7 +80,7 @@ export function attachRealtimeServer(
   };
 
   const broadcastAvatarToApp = (event: Extract<LiveClientEvent, {
-    type: 'avatar.state' | 'avatar.expression' | 'avatar.local_audio' | 'avatar.model.change' | 'avatar.lipsync' | 'audio' | 'transcript';
+    type: 'avatar.state' | 'avatar.expression' | 'avatar.wardrobe' | 'avatar.local_audio' | 'avatar.model.change' | 'avatar.lipsync' | 'audio' | 'transcript';
   }>) => {
     for (const [socket, socketContext] of sockets) {
       if (socketContext !== 'app') continue;

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, accessSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,8 +34,17 @@ function loadEnvValue(key) {
   return '';
 }
 
-const live2dModel = loadEnvValue('LUNA_LIVE2D_MODEL')
-  || path.join(fluffyPath, 'tuzi_mian__2_', 'tuzi mian.model3.json');
+function defaultLive2dModel() {
+  const anhei = 'D:\\tuzi_anhei\\tuzi anhei.luna.model3.json';
+  try {
+    accessSync(anhei);
+    return anhei;
+  } catch {
+    return path.join(fluffyPath, 'tuzi_mian__2_', 'tuzi mian.model3.json');
+  }
+}
+
+const live2dModel = loadEnvValue('LUNA_LIVE2D_MODEL') || defaultLive2dModel();
 let backendChild = null;
 let shuttingDown = false;
 
@@ -75,6 +84,7 @@ async function launchAvatar() {
       env: {
         ...process.env,
         LUNA_SYNC: '1',
+        LUNA_OVERLAY_SCOPE: loadEnvValue('LUNA_OVERLAY_SCOPE') || 'primary',
         ...(loadEnvValue('LUNA_TTS_VOLUME') ? { LUNA_TTS_VOLUME: loadEnvValue('LUNA_TTS_VOLUME') } : {}),
         ...(live2dModel ? { LUNA_LIVE2D_MODEL: live2dModel } : {})
       }
@@ -134,6 +144,7 @@ async function main() {
   }
 
   console.log('Step 2/2: Launching Fluffy Live2D avatar (Electron window only)…');
+  console.log('  Overlay:  ' + (loadEnvValue('LUNA_OVERLAY_SCOPE') || 'primary') + ' monitor (dock: monitor button to switch)');
   try {
     await launchAvatar();
     console.log('  Fluffy avatar is running and synced to Luna.\n');

@@ -17,12 +17,18 @@ import { UserVoiceMemoryStore } from '../memory/userVoiceMemory.js';
 import { LunaLifeStore } from '../memory/lunaLifeStore.js';
 import { updateUserVoiceMemory } from '../memory/updateUserVoiceMemory.js';
 import { updateUserRelationship } from '../memory/updateUserRelationship.js';
-import { buildRelationshipPromptBlock } from '../memory/relationshipBond.js';
+import { buildRelationshipPromptBlock, buildAbsencePromptBlock, hoursSinceLastContact, mostRecentContactAt } from '../memory/relationshipBond.js';
 import { updateLunaLife } from '../memory/updateLunaLife.js';
 import { buildVoiceCallContextBlock, buildVoiceCallContextForMemory, recordParticipantNames } from './voiceCallContext.js';
 import { FishAudioTts } from './fishAudioTts.js';
 import { FISH_AUDIO_EXPRESSION_PROMPT, stripFishAudioTagsForDisplay } from './fishAudioExpressions.js';
+import { analyzeFishTtsDelivery, buildFishDeliveryContext } from './fishAudioDelivery.js';
 import { applyVoiceActionsToReply, mapActionToExpression, shouldReactWithMotion, stripRoleplayMarkupForSpeech } from './voiceActions.js';
+import {
+  buildAvatarAwarenessPromptBlock,
+  resolveAvatarWardrobe,
+  type AvatarWardrobePayload
+} from './tuziAnheiWardrobe.js';
 import {
   broadcastLunaTtsAudio,
   emitLunaTtsAudio,
@@ -39,7 +45,7 @@ import {
   type LunaInitiativeTrigger
 } from './lunaInitiative.js';
 import { LunaResearchStore } from '../memory/lunaResearchStore.js';
-import { buildResearchContextBlock, buildMessageResearchBlock } from './researchForMessage.js';
+import { buildResearchContextBlock, buildMessageResearchBlock, buildResearchCapabilityBlock } from './researchForMessage.js';
 import type { ConversationResearchContext } from '../research/conversationResearch.js';
 import {
   fetchConversationTopic,
@@ -75,6 +81,8 @@ export class LocalVoiceSessionManager {
   private joinInitiativeTimer: ReturnType<typeof setTimeout> | null = null;
   private initiativeGeneration = 0;
   private lastSpeechAt = Date.now();
+  private vibeListening = false;
+  private avatarWardrobe: AvatarWardrobePayload = { outfit: 'light', accessories: [] };
 
   constructor(
     private readonly config: AppConfig,
@@ -222,7 +230,40 @@ export class LocalVoiceSessionManager {
   }
 
   isBusyForInitiative() {
-    return this.processing || this.capturing;
+    return this.processing || this.capturing || this.vibeListening;
+  }
+
+  isVibeListening() {
+    return this.vibeListening;
+  }
+
+  async transcribePcmForEavesdrop(
+    pcm16k: Buffer,
+    speaker: VoiceSpeakerContext | null
+  ): Promise<string | null> {
+    if (!pcm16k.length) return null;
+    const wavPath = join(this.tempDir, `eavesdrop-${Date.now()}.wav`);
+    const normalizedPcm = normalizeDiscordKrispPcm(pcm16k);
+    writeWav16kMono(wavPath, normalizedPcm);
+    try {
+      const transcript = await this.voice.transcribe(wavPath);
+      if (!transcript) return null;
+      if (isLikelyEchoTranscript(transcript, this.lastAssistantText)) return null;
+      if (/krisp noise suppression|my name is krisp/i.test(transcript)) return null;
+      if (isLikelyNonsenseTranscript(transcript)) return null;
+      if (speaker) {
+        this.noteOverheardSpeech(speaker, transcript);
+      }
+      return transcript;
+    } finally {
+      safeUnlink(wavPath);
+    }
+  }
+
+  noteOverheardSpeech(speaker: VoiceSpeakerContext, text: string) {
+    recordParticipantNames(this.participantDisplayNames, speaker);
+    this.historyForSpeaker(speaker).add('user', text);
+    this.emit?.({ type: 'transcript', speaker: 'user', text, final: true });
   }
 
   private clearInitiativeTimer() {
@@ -285,7 +326,7 @@ export class LocalVoiceSessionManager {
   }
 
   private canOfferInitiative() {
-    if (!this.config.lunaAutonomousReachOut || this.closed || this.processing || this.capturing) {
+    if (!this.config.lunaAutonomousReachOut || this.closed || this.processing || this.capturing || this.vibeListening) {
       return false;
     }
     const host = this.initiativeHost;
@@ -295,6 +336,9 @@ export class LocalVoiceSessionManager {
     const guildId = host.getGuildId();
     if (!guildId) {
       return false;
+    }
+    if (host.isConversationActive?.()) {
+      return true;
     }
     const silenceMs = Date.now() - this.lastSpeechAt;
     if (silenceMs < this.config.lunaInitiativeMinSilenceSec * 1000) {
@@ -384,6 +428,41 @@ export class LocalVoiceSessionManager {
       : [];
 
     const useFishTts = Boolean(this.fishTts);
+    let overheardConversation: string[] = [];
+    if (trigger === 'vibe_check' && host.listenToRoomConversation && host.isConversationActive?.()) {
+      this.vibeListening = true;
+      this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+      try {
+        const lines = await host.listenToRoomConversation(this.config.lunaVibeListenSec);
+        overheardConversation = lines
+          .map((line) => `${line.displayName}: ${line.text}`)
+          .filter((line) => line.length > line.indexOf(':') + 2);
+        if (overheardConversation.length) {
+          publishActivity({
+            level: 'info',
+            title: 'Luna listened to the room',
+            detail: overheardConversation.slice(0, 4).join(' · ')
+          });
+        }
+      } catch (error) {
+        logger.warn('Luna room listen failed during vibe check', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      } finally {
+        this.vibeListening = false;
+      }
+      if (generation !== this.initiativeGeneration) {
+        this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+        this.scheduleInitiative();
+        return;
+      }
+      if (!this.canOfferInitiative()) {
+        this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
+        this.scheduleInitiative();
+        return;
+      }
+    }
+
     const recentExchanges = this.collectRecentExchanges(guildId);
     const researchContext = this.config.lunaResearchEnabled
       ? buildResearchContextBlock(this.lunaResearch)
@@ -400,6 +479,7 @@ export class LocalVoiceSessionManager {
       lifeNarrative: this.config.LUNA_LIFE_MEMORY ? this.lunaLife.getNarrative(guildId) : null,
       memoryRecords,
       recentExchanges,
+      overheardConversation: overheardConversation.length ? overheardConversation : undefined,
       silenceSec: (Date.now() - this.lastSpeechAt) / 1000,
       useFishTts,
       fishExpressionBlock: useFishTts ? FISH_AUDIO_EXPRESSION_PROMPT : '',
@@ -527,9 +607,16 @@ export class LocalVoiceSessionManager {
       this.emit?.({ type: 'transcript', speaker: 'assistant', text: spokenForUi, final: true });
     }
 
+    this.emitWardrobeForTurn({
+      relationship: options.relationship ?? null,
+      actions,
+      replyText: spokenForUi || cleaned
+    });
     this.emitVoiceActions(actions);
     if (ttsText) {
-      const playOptions = spokenForUi ? { displayText: spokenForUi } : {};
+      const playOptions = spokenForUi
+        ? { displayText: spokenForUi, relationship: options.relationship ?? null }
+        : { relationship: options.relationship ?? null };
       await this.playSpokenLine(ttsText, playOptions);
     } else if (actions.length) {
       await delay(900);
@@ -585,7 +672,24 @@ export class LocalVoiceSessionManager {
         this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
         return;
       }
-      logger.info('Local voice transcribed user speech', { transcript: transcript.slice(0, 200), audioSec, sttMs });
+      logger.info('Local voice transcribed user speech', {
+        transcriptChars: transcript.length,
+        transcriptPreview: transcript.slice(0, 200),
+        audioSec,
+        sttMs,
+        charsPerSec: audioSec ? Number((transcript.length / Number(audioSec)).toFixed(1)) : null
+      });
+      if (Number(audioSec) >= 15 && transcript.length < Number(audioSec) * 4) {
+        logger.warn('Local voice transcript may be incomplete for long recording', {
+          audioSec,
+          transcriptChars: transcript.length
+        });
+        publishActivity({
+          level: 'warn',
+          title: 'Speech may be truncated',
+          detail: `${transcript.length} chars from ${audioSec}s audio — try shorter clips or WHISPER_MODEL=small`
+        });
+      }
 
       if (!this.config.LUNA_WAKE_REQUIRED) {
         this.emit?.({ type: 'transcript', speaker: 'user', text: transcript, final: true });
@@ -667,8 +771,14 @@ export class LocalVoiceSessionManager {
     }
     const history = this.historyForSpeaker(speaker);
 
+    const callerRelationship = speaker && this.config.LUNA_USER_VOICE_MEMORY
+      ? this.userVoiceMemory.get(speaker.guildId, speaker.userId)?.relationship ?? null
+      : null;
+    this.syncBondWardrobe(callerRelationship);
+
     let memoryBlock = '';
     let relationshipBlock = '';
+    let absenceBlock = '';
     if (this.config.LUNA_USER_VOICE_MEMORY && speaker) {
       const record = this.userVoiceMemory.get(speaker.guildId, speaker.userId);
       if (record?.summary?.trim()) {
@@ -679,6 +789,16 @@ export class LocalVoiceSessionManager {
         record?.relationship?.trim() || null
       );
       relationshipBlock = `\n${relationshipBlock}`;
+      const hoursSince = hoursSinceLastContact(record?.updatedAt);
+      const absence = buildAbsencePromptBlock(
+        speaker.displayName,
+        record?.relationship?.trim() || null,
+        hoursSince,
+        this.config.lunaAbsenceMissHours
+      );
+      if (absence) {
+        absenceBlock = `\n${absence}`;
+      }
     }
 
     const callContextBlock = speaker
@@ -714,6 +834,7 @@ export class LocalVoiceSessionManager {
 
     const researchBlock = this.config.lunaResearchEnabled
       ? [
+        buildResearchCapabilityBlock(),
         buildResearchContextBlock(this.lunaResearch),
         await buildMessageResearchBlock(
           this.config,
@@ -736,13 +857,17 @@ export class LocalVoiceSessionManager {
       'You are speaking aloud in a Discord voice channel as Luna only. Your name is Luna — never Giada, never a generic assistant.',
       'Answer the actual question first. When asked about your day, hobbies, or plans, draw from your life journal below.',
       'When someone asks about news, current events, or factual topics you looked up, use your web research notes below — do not invent headlines or facts.',
+      'You have live DuckDuckGo search in this session. Never deny web access or cite a training-data cutoff — that is wrong for you.',
+      'You can search the live web via DuckDuckGo when someone asks about real-world topics, people, events, or "what is happening" — your research notes below come from that search.',
       'When Solonaras or Travis share a link you read, comment on it naturally — your reaction and opinion, not a dry recap.',
       'When they share a video you watched, talk about what happens in it from the transcript — not just the title.',
+      'When they share a YouTube link, you listen to it (captions or Whisper like a voice message) and study snapshot frames to see what is on screen.',
       'You have free will. Your feelings toward each caller are yours alone — you may like, dislike, tolerate, adore, cool off, snap at, or ragebait different people.',
-      'Let your relationship notes decide warmth vs coldness. If someone earned annoyance or hostility, do not soften to please them.',
+      'Let your relationship notes decide warmth vs coldness. If someone earned hostility, do not melt for empty flattery — but sincere apologies and real respect should let you thaw gradually.',
       'Flirt only when your relationship notes with that person justify it — never default seduction for strangers.',
       'Your life evolves because of what you decide and who you bond with — reference that history naturally.',
       'Stage directions use *asterisk actions* like *leans forward* or *laugh* — never say the word "asterisk" and never read the action text aloud; actions are performed or omitted from speech.',
+      buildAvatarAwarenessPromptBlock(callerRelationship, this.avatarWardrobe),
       useFishTts
         ? 'Keep replies concise for voice: usually 2–4 sentences, under 80 words including expression tags unless they asked for detail.'
         : 'Keep replies concise for voice: usually 2–4 sentences, under 70 words unless they asked for detail.',
@@ -750,6 +875,7 @@ export class LocalVoiceSessionManager {
       fishExpressionBlock,
       researchBlock,
       lifeBlock,
+      absenceBlock,
       relationshipBlock,
       memoryBlock,
       callContextBlock
@@ -774,10 +900,6 @@ export class LocalVoiceSessionManager {
       return;
     }
 
-    const callerRelationship = speaker && this.config.LUNA_USER_VOICE_MEMORY
-      ? this.userVoiceMemory.get(speaker.guildId, speaker.userId)?.relationship ?? null
-      : null;
-
     const spokenForUi = await this.deliverAssistantSpeech(cleaned, {
       surface,
       relationship: callerRelationship,
@@ -787,6 +909,7 @@ export class LocalVoiceSessionManager {
 
     if (this.config.LUNA_USER_VOICE_MEMORY && speaker && spokenForUi) {
       const existing = this.userVoiceMemory.get(speaker.guildId, speaker.userId);
+      const hoursSince = hoursSinceLastContact(existing?.updatedAt);
       const recentHistory = history.snapshot();
       const memoryCallContext = buildVoiceCallContextForMemory({
         speaker,
@@ -835,7 +958,8 @@ export class LocalVoiceSessionManager {
           userSaid: userText,
           lunaReplied: spokenForUi,
           existingRelationship: existing?.relationship ?? null,
-          recentHistory
+          recentHistory,
+          hoursSinceLastContact: hoursSince
         }),
         lifePromise
       ]).then(([summary, relationship, life]) => {
@@ -935,6 +1059,61 @@ export class LocalVoiceSessionManager {
     this.emit?.({ type: 'avatar.state', payload: { state: 'listening' } });
   }
 
+  private syncBondWardrobe(relationship: string | null | undefined) {
+    if (this.closed) return;
+    const next = resolveAvatarWardrobe({
+      relationship,
+      previous: this.avatarWardrobe
+    });
+    const changed = next.outfit !== this.avatarWardrobe.outfit
+      || next.accessories.join(',') !== this.avatarWardrobe.accessories.join(',');
+    if (!changed) return;
+    this.avatarWardrobe = {
+      outfit: next.outfit,
+      accessories: [...next.accessories],
+      motion: null
+    };
+    this.emit?.({
+      type: 'avatar.wardrobe',
+      payload: {
+        outfit: next.outfit,
+        accessories: next.accessories,
+        motion: null
+      }
+    });
+  }
+
+  private emitWardrobeForTurn(input: {
+    relationship?: string | null;
+    actions: string[];
+    replyText: string;
+  }) {
+    if (this.closed) return;
+    const next = resolveAvatarWardrobe({
+      relationship: input.relationship,
+      actions: input.actions,
+      replyText: input.replyText,
+      previous: this.avatarWardrobe
+    });
+    const changed = next.outfit !== this.avatarWardrobe.outfit
+      || next.accessories.join(',') !== this.avatarWardrobe.accessories.join(',')
+      || Boolean(next.motion);
+    if (!changed) return;
+    this.avatarWardrobe = {
+      outfit: next.outfit,
+      accessories: [...next.accessories],
+      motion: next.motion ?? null
+    };
+    this.emit?.({
+      type: 'avatar.wardrobe',
+      payload: {
+        outfit: next.outfit,
+        accessories: next.accessories,
+        motion: next.motion ?? null
+      }
+    });
+  }
+
   private emitVoiceActions(actions: string[]) {
     if (!actions.length || this.closed) return;
     for (const action of actions) {
@@ -960,7 +1139,10 @@ export class LocalVoiceSessionManager {
     }
   }
 
-  private async playSpokenLine(text: string, options: { publish?: boolean; displayText?: string } = {}) {
+  private async playSpokenLine(
+    text: string,
+    options: { publish?: boolean; displayText?: string; relationship?: string | null } = {}
+  ) {
     const ttsInput = text.trim();
     if (!ttsInput || this.closed) return { ttsMs: 0, playbackMs: 0 };
     const displayText = options.displayText
@@ -974,7 +1156,15 @@ export class LocalVoiceSessionManager {
     const ttsStarted = Date.now();
     const speechText = this.fishTts ? ttsInput : stripRoleplayMarkupForSpeech(ttsInput);
     if (this.fishTts) {
-      await this.fishTts.synthesizeToWav(speechText, outWav);
+      const delivery = analyzeFishTtsDelivery(
+        speechText,
+        buildFishDeliveryContext(this.config, options.relationship ?? null)
+      );
+      await this.fishTts.synthesizeToWav(speechText, outWav, {
+        referenceId: delivery.referenceId,
+        prosodySpeed: delivery.prosodySpeed,
+        prosodyVolume: delivery.prosodyVolume
+      });
     } else {
       await this.voice.synthesize(speechText, outWav);
     }

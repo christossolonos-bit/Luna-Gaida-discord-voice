@@ -45,6 +45,10 @@ export function ytDlpCommonArgs(config: AppConfig, playerClients = config.YTDLP_
     '--extractor-args',
     `youtube:player_client=${playerClients}`
   ];
+  const ffmpeg = config.FFMPEG_BINARY?.trim();
+  if (ffmpeg) {
+    args.push('--ffmpeg-location', ffmpeg);
+  }
   const cookiesPath = config.YTDLP_COOKIES_PATH?.trim();
   if (cookiesPath && isRegularFile(cookiesPath)) {
     const writableCookiesPath = prepareWritableCookiesFile(cookiesPath);

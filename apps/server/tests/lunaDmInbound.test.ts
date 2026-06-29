@@ -28,9 +28,15 @@ describe('lunaDmInbound', () => {
 });
 
 describe('dm research intent', () => {
-  it('detects casual news questions', () => {
-    expect(detectResearchIntent('have you been reading the news?')?.mode).toBe('rss');
-    expect(detectResearchIntent('what are the headlines you read?')?.mode).toBe('rss');
-    expect(detectResearchIntent('been following any headlines lately?')?.mode).toBe('rss');
+  it('detects casual news questions as deep search', () => {
+    for (const question of [
+      'have you been reading the news?',
+      'what are the headlines you read?',
+      'been following any headlines lately?'
+    ]) {
+      const intent = detectResearchIntent(question);
+      expect(intent?.mode).toBe('search');
+      expect(intent?.deep).toBe(true);
+    }
   });
 });

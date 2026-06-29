@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { MemoryStore } from '../memory/types.js';
 import { classifyText } from '../policy/privacy.js';
-import { searchWeb } from '../research/webSearch.js';
+import { searchWeb, type SearchProvider } from '../research/webSearch.js';
 
 export interface ToolContext {
   surface: 'desktop' | 'discord' | 'browser';
@@ -35,6 +35,7 @@ export interface VoiceController {
 
 export interface ToolRegistryOptions {
   searxngUrl?: string;
+  searchProvider?: SearchProvider;
   memoryToolsEnabled?: boolean;
 }
 
@@ -100,7 +101,7 @@ export function createToolRegistry(options: ToolRegistryOptions = {}): Registere
     {
       declaration: {
         name: 'searchWeb',
-        description: 'Search the web using the private SearXNG instance. Use this for current facts, links, documentation, news, or anything that needs web lookup.',
+        description: 'Search the web via DuckDuckGo for current facts, links, documentation, news, or live information.',
         parameters: {
           type: 'OBJECT',
           properties: {
@@ -112,7 +113,10 @@ export function createToolRegistry(options: ToolRegistryOptions = {}): Registere
       },
       async run(args) {
         const parsed = searchWebSchema.parse(args);
-        const result = await searchWeb(options.searxngUrl, parsed.query, parsed.limit ?? 5);
+        const result = await searchWeb(parsed.query, parsed.limit ?? 5, {
+          searxngUrl: options.searxngUrl,
+          provider: options.searchProvider ?? 'duckduckgo'
+        });
         return { ...result };
       }
     },
